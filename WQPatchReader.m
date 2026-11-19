@@ -183,7 +183,9 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
     NSDictionary *payload = payloadData ? [NSPropertyListSerialization propertyListWithData:payloadData options:0 format:nil error:nil] : nil;
     NSDictionary *project = [payload isKindOfClass:NSDictionary.class] ? payload[@"project"] : nil;
     NSArray *rules = [project isKindOfClass:NSDictionary.class] ? project[@"rules"] : nil;
-    NSArray *directories = [project isKindOfClass:NSDictionary.class] ? project[@"directories"] : nil;
+    id rawDirectories = [project isKindOfClass:NSDictionary.class] ? project[@"directories"] : nil;
+    NSArray *directories = [rawDirectories isKindOfClass:NSArray.class] ? rawDirectories
+        : (!rawDirectories || rawDirectories == NSNull.null) ? @[] : nil;
     NSDictionary *digests = [payload isKindOfClass:NSDictionary.class] ? payload[@"replacementDigests"] : nil;
     NSString *projectID = [project isKindOfClass:NSDictionary.class] ? project[@"id"] : nil;
     NSString *name = [project isKindOfClass:NSDictionary.class] ? project[@"name"] : nil;
