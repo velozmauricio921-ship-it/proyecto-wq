@@ -184,7 +184,7 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
     NSMutableURLRequest *initRequest = [NSMutableURLRequest requestWithURL:initURL];
     initRequest.HTTPMethod = @"GET";
     [initRequest setValue:@"KeyAuth" forHTTPHeaderField:@"User-Agent"];
-    [session dataTaskWithRequest:initRequest completionHandler:^(NSData *initData, NSURLResponse *initResponse, NSError *initError) {
+    [[session dataTaskWithRequest:initRequest completionHandler:^(NSData *initData, NSURLResponse *initResponse, NSError *initError) {
         NSDictionary *initJSON = initData ? wq_auth_json(initData) : nil;
         NSHTTPURLResponse *httpInit = [initResponse isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)initResponse : nil;
         NSNumber *initSuccess = initJSON[@"success"];
@@ -212,7 +212,7 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         NSMutableURLRequest *licenseRequest = [NSMutableURLRequest requestWithURL:licenseURL];
         licenseRequest.HTTPMethod = @"GET";
         [licenseRequest setValue:@"KeyAuth" forHTTPHeaderField:@"User-Agent"];
-        [session dataTaskWithRequest:licenseRequest completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        [[session dataTaskWithRequest:licenseRequest completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             [session finishTasksAndInvalidate];
             NSDictionary *json = data ? wq_auth_json(data) : nil;
             NSNumber *success = json[@"success"];
