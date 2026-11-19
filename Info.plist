@@ -32,6 +32,18 @@
 				<string>public.zip-archive</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>3105 Patch Package</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>cz.kolbi.wqfiles.3105-patch</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>WQFiles</string>
@@ -142,6 +154,26 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>wqtheme</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>3105 Patch Package</string>
+			<key>UTTypeIdentifier</key>
+			<string>cz.kolbi.wqfiles.3105-patch</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>3105</string>
 				</array>
 			</dict>
 		</dict>
