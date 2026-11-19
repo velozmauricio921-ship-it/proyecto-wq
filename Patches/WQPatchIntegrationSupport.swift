@@ -102,14 +102,6 @@ struct FileDocumentPicker: UIViewControllerRepresentable {
         self.allowedContentTypes = allowedContentTypes
         self.copiesSelectedDocument = copiesSelectedDocument
         self.allowsMultipleSelection = allowsMultipleSelection
-    
-        @objc public override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
-            super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
-        }
-
-        @objc public required init?(coder: NSCoder) {
-            super.init(coder: coder)
-        }
         self.onSelection = onSelection
         self.onCancel = onCancel
     }
@@ -518,8 +510,16 @@ public final class WQPatchHostViewController: UIViewController {
     @objc public var openWorkspaceHandler: ((String, String) -> Void)?
 
     private let draftCoordinator = PatchDraftCoordinator()
-    private var hostingController: UIHostingController<PatchProjectsView>?
+    private var hostingController: UIHostingController<AnyView>?
     private var restoresNavigationBar = false
+
+    @objc public override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
+        super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
+    }
+
+    @objc public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
 
     override public func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -537,17 +537,19 @@ public final class WQPatchHostViewController: UIViewController {
         }
     }
 
-    override func viewDidLoad() {
+    public override func viewDidLoad() {
         super.viewDidLoad()
-        let rootView = PatchProjectsView()
-            .environmentObject(draftCoordinator)
-            .environment(\.appLanguage, AppLanguage())
-            .environment(\.openPatchWorkspace) { [weak self] path, title in
-                self?.openWorkspaceHandler?(path, title)
-            }
-            .environment(\.closePatchModule) { [weak self] in
-                self?.navigationController?.popViewController(animated: true)
-            }
+        let rootView = AnyView(
+            PatchProjectsView()
+                .environmentObject(draftCoordinator)
+                .environment(\.appLanguage, AppLanguage())
+                .environment(\.openPatchWorkspace) { [weak self] path, title in
+                    self?.openWorkspaceHandler?(path, title)
+                }
+                .environment(\.closePatchModule) { [weak self] in
+                    self?.navigationController?.popViewController(animated: true)
+                }
+        )
         let host = UIHostingController(rootView: rootView)
         addChild(host)
         view.addSubview(host.view)
