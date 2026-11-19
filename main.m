@@ -38,6 +38,7 @@
 #import "WQMediaStream.h"
 #import "WQInspector.h"
 #import "WQPatchReader.h"
+#import "WQPatchIntegration-Swift.h"
 #import "WQAuthGate.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -6623,7 +6624,13 @@ static NSString *const kWQTroubleshootingFooter =
     } else if (indexPath.row == 2) {
         [self.navigationController pushViewController:[WQRecentlyDeletedViewController new] animated:YES];
     } else {
-        [self.navigationController pushViewController:[WQPatchReaderViewController new] animated:YES];
+        WQPatchHostViewController *patches = [[WQPatchHostViewController alloc] initWithNibName:nil bundle:nil];
+        __weak typeof(self) weakSelf = self;
+        patches.openWorkspaceHandler = ^(NSString *path, NSString *title) {
+            WQDirViewController *workspace = [[WQDirViewController alloc] initWithPath:path title:title];
+            [weakSelf.navigationController pushViewController:workspace animated:YES];
+        };
+        [self.navigationController pushViewController:patches animated:YES];
     }
 }
 
