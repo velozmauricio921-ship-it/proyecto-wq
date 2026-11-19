@@ -446,7 +446,7 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         [NSURLQueryItem queryItemWithName:@"name" value:appName],
         [NSURLQueryItem queryItemWithName:@"ownerid" value:ownerID],
         [NSURLQueryItem queryItemWithName:@"secret" value:secret],
-        [NSURLQueryItem queryItemWithName:@"version" value:@"1.0"],
+        [NSURLQueryItem queryItemWithName:@"ver" value:@"1.0"],
     ];
     NSURL *initURL = wq_auth_url(initItems);
     if (!initURL) {
