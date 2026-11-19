@@ -149,6 +149,35 @@ static NSString *wq_auth_string(id value)
     return @"";
 }
 
+static BOOL wq_auth_boolean(id value, BOOL *recognized)
+{
+    if ([value isKindOfClass:NSNumber.class]) {
+        if (recognized) *recognized = YES;
+        return [value boolValue];
+    }
+    if ([value isKindOfClass:NSString.class]) {
+        NSString *text = [[value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
+        if ([text isEqualToString:@"true"] || [text isEqualToString:@"1"] || [text isEqualToString:@"yes"]) {
+            if (recognized) *recognized = YES;
+            return YES;
+        }
+        if ([text isEqualToString:@"false"] || [text isEqualToString:@"0"] || [text isEqualToString:@"no"]) {
+            if (recognized) *recognized = YES;
+            return NO;
+        }
+    }
+    if (recognized) *recognized = NO;
+    return NO;
+}
+
+static NSString *wq_auth_response_keys(NSDictionary *response)
+{
+    NSArray<NSString *> *keys = [[response allKeys] sortedArrayUsingSelector:@selector(compare:)];
+    NSString *summary = [keys componentsJoinedByString:@", "];
+    if (summary.length > 160) summary = [[summary substringToIndex:160] stringByAppendingString:@"…"];
+    return summary.length ? summary : @"(ninguno)";
+}
+
 static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
 {
     NSString *appName = wq_auth_config(@"WQKeyAuthAppName");
@@ -184,7 +213,6 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
     [[session dataTaskWithRequest:initRequest completionHandler:^(NSData *initData, NSURLResponse *initResponse, NSError *initError) {
         NSDictionary *initJSON = initData ? wq_auth_json(initData) : nil;
         NSHTTPURLResponse *httpInit = [initResponse isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)initResponse : nil;
-        NSNumber *initSuccess = initJSON[@"success"];
         NSString *sessionID = [initJSON[@"sessionid"] isKindOfClass:NSString.class] ? initJSON[@"sessionid"] : nil;
         if (initError) {
             completion(NO, [NSString stringWithFormat:@"No se pudo conectar con KeyAuth: %@", initError.localizedDescription], NO);
@@ -198,11 +226,27 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
             completion(NO, [NSString stringWithFormat:@"KeyAuth respondió con HTTP %ld al iniciar sesión.", (long)httpInit.statusCode], NO);
             return;
         }
-        if (![initSuccess isKindOfClass:NSNumber.class]) {
-            completion(NO, @"KeyAuth devolvió JSON inválido al iniciar sesión.", NO);
+        if (!initJSON) {
+            NSString *contentType = [httpInit.allHeaderFields[@"Content-Type"] isKindOfClass:NSString.class]
+                ? httpInit.allHeaderFields[@"Content-Type"] : @"desconocido";
+            completion(NO, [NSString stringWithFormat:@"KeyAuth respondió HTTP %ld con contenido %@, no con un objeto JSON.",
+                            (long)httpInit.statusCode, contentType], NO);
             return;
         }
-        if (!initSuccess.boolValue) {
+        id rawSuccess = initJSON[@"success"];
+        if (!rawSuccess || rawSuccess == NSNull.null) {
+            completion(NO, [NSString stringWithFormat:@"El JSON de inicio de KeyAuth no contiene 'success'. Campos recibidos: %@.",
+                            wq_auth_response_keys(initJSON)], NO);
+            return;
+        }
+        BOOL successRecognized = NO;
+        BOOL initSuccess = wq_auth_boolean(rawSuccess, &successRecognized);
+        if (!successRecognized) {
+            completion(NO, [NSString stringWithFormat:@"El campo 'success' de KeyAuth tiene un formato no reconocido (%@). Campos recibidos: %@.",
+                            NSStringFromClass([rawSuccess class]), wq_auth_response_keys(initJSON)], NO);
+            return;
+        }
+        if (!initSuccess) {
             NSString *serverMessage = [initJSON[@"message"] isKindOfClass:NSString.class] ? initJSON[@"message"] : @"KeyAuth rechazó la configuración de WQ.";
             if (serverMessage.length > 180) serverMessage = [[serverMessage substringToIndex:180] stringByAppendingString:@"…"];
             completion(NO, [NSString stringWithFormat:@"KeyAuth: %@", serverMessage], YES);
