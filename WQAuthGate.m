@@ -8,6 +8,8 @@
 static NSString *const kWQAuthRememberKey = @"WQKeyAuthRememberLicense";
 static NSString *const kWQAuthLicenseService = @"cz.kolbi.wqfiles.keyauth.license";
 static NSString *const kWQAuthLicenseAccount = @"license";
+static NSString *const kWQAuthHardwareIDService = @"cz.kolbi.wqfiles.keyauth.hwid";
+static NSString *const kWQAuthHardwareIDAccount = @"device-id";
 static NSString *const kWQAuthConfirmationService = @"cz.kolbi.wqfiles.keyauth.confirmation";
 static NSString *const kWQAuthConfirmationAccount = @"validated-license";
 static NSString *const kWQAuthRuntimeSignatureKey = @"WQKeyAuthRuntimeSignature";
@@ -28,6 +30,7 @@ static NSString *wq_auth_config(NSString *key)
 
 static NSDate *wq_auth_expiry(id value);
 static NSDate *wq_auth_timeleft(id value);
+static NSDictionary *wq_auth_confirmation(void);
 static void wq_auth_ensure_runtime_state(void);
 static BOOL wq_auth_should_force_logout(void);
 
@@ -61,16 +64,70 @@ static BOOL wq_auth_is_configured(void)
         wq_auth_config(@"WQKeyAuthOwnerID").length && wq_auth_config(@"WQKeyAuthSecret").length;
 }
 
+static NSString *wq_auth_keychain_hardware_id(void)
+{
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: kWQAuthHardwareIDService,
+        (__bridge id)kSecAttrAccount: kWQAuthHardwareIDAccount,
+        (__bridge id)kSecReturnData: @YES,
+        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
+    };
+    CFTypeRef result = NULL;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) != errSecSuccess || !result) return nil;
+    NSData *data = CFBridgingRelease(result);
+    NSString *saved = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    return [[[NSUUID alloc] initWithUUIDString:saved] UUIDString];
+}
+
+static BOOL wq_auth_store_keychain_hardware_id(NSString *identifier)
+{
+    NSData *data = [identifier dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: kWQAuthHardwareIDService,
+        (__bridge id)kSecAttrAccount: kWQAuthHardwareIDAccount,
+    };
+    NSDictionary *attributes = @{
+        (__bridge id)kSecValueData: data,
+        (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+    };
+    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)attributes);
+    if (status == errSecItemNotFound) {
+        NSMutableDictionary *item = [query mutableCopy];
+        [item addEntriesFromDictionary:attributes];
+        status = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
+    }
+    return status == errSecSuccess;
+}
+
 static NSString *wq_auth_hardware_id(void)
 {
-    NSString *identifier = UIDevice.currentDevice.identifierForVendor.UUIDString;
-    if (identifier.length) return identifier;
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    NSString *saved = [defaults stringForKey:@"WQKeyAuthHardwareID"];
-    if (saved.length) return saved;
-    saved = NSUUID.UUID.UUIDString;
-    [defaults setObject:saved forKey:@"WQKeyAuthHardwareID"];
-    return saved;
+    static NSObject *lock;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ lock = [NSObject new]; });
+    @synchronized (lock) {
+        static NSString *hardwareID;
+        if (hardwareID.length) return hardwareID;
+
+        hardwareID = wq_auth_keychain_hardware_id();
+        if (!hardwareID.length) {
+            NSString *confirmed = wq_auth_confirmation()[@"hardwareID"];
+            hardwareID = [[[NSUUID alloc] initWithUUIDString:confirmed] UUIDString];
+        }
+        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+        if (!hardwareID.length) hardwareID = UIDevice.currentDevice.identifierForVendor.UUIDString;
+        if (!hardwareID.length) {
+            NSString *legacy = [defaults stringForKey:@"WQKeyAuthHardwareID"];
+            hardwareID = [[[NSUUID alloc] initWithUUIDString:legacy] UUIDString];
+        }
+        if (!hardwareID.length) hardwareID = NSUUID.UUID.UUIDString;
+        if (!wq_auth_store_keychain_hardware_id(hardwareID))
+            [defaults setObject:hardwareID forKey:@"WQKeyAuthHardwareID"];
+        else
+            [defaults removeObjectForKey:@"WQKeyAuthHardwareID"];
+        return hardwareID;
+    }
 }
 
 static NSString *wq_auth_saved_license(void)
