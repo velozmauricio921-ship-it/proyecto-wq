@@ -5442,7 +5442,7 @@ static void wq_apply_design(void);
 - (instancetype)init
 {
     if ((self = [super initWithNibName:nil bundle:nil])) {
-        self.title = WQLocalizedNullable(@"WQ Files");
+        self.title = @"BAIJ STORE MOD";
     }
     return self;
 }
