@@ -238,6 +238,37 @@ class StagedBuildTests(unittest.TestCase):
             targets = [a for a in arguments if a.startswith("-miphoneos-version-min=")]
             self.assertEqual(targets, ["-miphoneos-version-min=26.0"])
 
+    def test_keyauth_gate_is_compiled_and_pipeline_uses_existing_names(self):
+        build = BUILD.read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "build-ipa.yml").read_text(encoding="utf-8")
+        self.assertIn("WQAuthGate.m", build)
+        self.assertIn("KEYAUTH_SECRET", workflow)
+        self.assertIn("KEYAUTH_OWNER_ID", workflow)
+        self.assertIn("KEYAUTH_APP_NAME", workflow)
+        source_info = plistlib.loads((ROOT / "Info.plist").read_bytes())
+        self.assertNotIn("WQKeyAuthSecret", source_info)
+
+    def test_keyauth_values_are_injected_only_into_built_app(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            final = root / "release" / "WQFiles.ipa"
+            final.parent.mkdir()
+            environment = self._fake_environment(root)
+            environment["WQFILES_FINAL_IPA"] = str(final)
+            environment["KEYAUTH_SECRET"] = "fixture-secret-not-real"
+            environment["KEYAUTH_OWNER_ID"] = "fixture-owner"
+            environment["KEYAUTH_APP_NAME"] = "fixture-app"
+            result = subprocess.run(
+                [str(BUILD)], cwd=ROOT, env=environment,
+                text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with zipfile.ZipFile(final) as archive:
+                info = plistlib.loads(archive.read("Payload/WQFiles.app/Info.plist"))
+            self.assertEqual(info["WQKeyAuthSecret"], "fixture-secret-not-real")
+            self.assertEqual(info["WQKeyAuthOwnerID"], "fixture-owner")
+            self.assertEqual(info["WQKeyAuthAppName"], "fixture-app")
+
     def test_success_publishes_only_a_validated_zip(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
