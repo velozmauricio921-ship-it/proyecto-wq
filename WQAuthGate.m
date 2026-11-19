@@ -6,6 +6,8 @@
 #import <math.h>
 
 static NSString *const kWQAuthRememberKey = @"WQKeyAuthRememberLicense";
+static NSString *const kWQAuthLicenseService = @"cz.kolbi.wqfiles.keyauth.license";
+static NSString *const kWQAuthLicenseAccount = @"license";
 static NSString *const kWQAuthConfirmationService = @"cz.kolbi.wqfiles.keyauth.confirmation";
 static NSString *const kWQAuthConfirmationAccount = @"validated-license";
 static NSString *const kWQAuthRuntimeSignatureKey = @"WQKeyAuthRuntimeSignature";
@@ -387,6 +389,8 @@ static NSString *wq_auth_response_preview(NSData *data, NSArray<NSString *> *sen
 }
 
 static NSString *wq_auth_string(id value)
+{
+    if ([value isKindOfClass:NSString.class]) return value;
     if ([value isKindOfClass:NSNumber.class]) return [value stringValue];
     return @"";
 }
