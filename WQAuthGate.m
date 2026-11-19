@@ -2,12 +2,21 @@
 #import "WQTheme.h"
 #import "WQUI.h"
 #import <Security/Security.h>
+#import <CommonCrypto/CommonDigest.h>
 #import <math.h>
 
 static NSString *const kWQAuthRememberKey = @"WQKeyAuthRememberLicense";
 static NSString *const kWQAuthLicenseService = @"cz.kolbi.wqfiles.keyauth.license";
 static NSString *const kWQAuthLicenseAccount = @"license";
+static NSString *const kWQAuthConfirmationService = @"cz.kolbi.wqfiles.keyauth.confirmation";
+static NSString *const kWQAuthConfirmationAccount = @"validated-license";
+static NSString *const kWQAuthRuntimeSignatureKey = @"WQKeyAuthRuntimeSignature";
+static NSString *const kWQAuthValidatedKey = @"WQKeyAuthLicenseValidated";
+static NSString *const kWQAuthStatusKey = @"WQKeyAuthLicenseStatus";
+static NSString *const kWQAuthMessageKey = @"WQKeyAuthLicenseMessage";
+static NSString *const kWQAuthExpiryKey = @"WQKeyAuthLicenseExpiry";
 static NSString *const kWQAuthBaseURL = @"https://keyauth.win/api/1.2/";
+static const NSTimeInterval kWQAuthRecentValidationAge = 24 * 60 * 60;
 
 typedef void (^WQAuthCompletion)(BOOL valid, NSString *message, BOOL definitiveFailure);
 
@@ -17,8 +26,36 @@ static NSString *wq_auth_config(NSString *key)
     return [value isKindOfClass:NSString.class] ? value : @"";
 }
 
+static NSDate *wq_auth_expiry(id value);
+static void wq_auth_ensure_runtime_state(void);
+static BOOL wq_auth_should_force_logout(void);
+
+static NSString *wq_auth_runtime_signature(void)
+{
+    NSString *material = [@[kWQAuthBaseURL, wq_auth_config(@"WQKeyAuthAppName"),
+                            wq_auth_config(@"WQKeyAuthOwnerID"), wq_auth_config(@"WQKeyAuthSecret")]
+                          componentsJoinedByString:@"|"];
+    NSData *data = [material dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (NSUInteger i = 0; i < sizeof(digest); i++) [hex appendFormat:@"%02x", digest[i]];
+    return hex;
+}
+
+static void wq_auth_delete_confirmation(void)
+{
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: kWQAuthConfirmationService,
+        (__bridge id)kSecAttrAccount: kWQAuthConfirmationAccount,
+    };
+    SecItemDelete((__bridge CFDictionaryRef)query);
+}
+
 static BOOL wq_auth_is_configured(void)
 {
+    wq_auth_ensure_runtime_state();
     return wq_auth_config(@"WQKeyAuthAppName").length &&
         wq_auth_config(@"WQKeyAuthOwnerID").length && wq_auth_config(@"WQKeyAuthSecret").length;
 }
@@ -82,6 +119,182 @@ static void wq_auth_delete_license(void)
     SecItemDelete((__bridge CFDictionaryRef)query);
 }
 
+static NSDictionary *wq_auth_confirmation(void)
+{
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: kWQAuthConfirmationService,
+        (__bridge id)kSecAttrAccount: kWQAuthConfirmationAccount,
+        (__bridge id)kSecReturnData: @YES,
+        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
+    };
+    CFTypeRef result = NULL;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) != errSecSuccess || !result) return nil;
+    NSData *data = CFBridgingRelease(result);
+    id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    return [object isKindOfClass:NSDictionary.class] ? object : nil;
+}
+
+static void wq_auth_store_confirmation(NSString *license)
+{
+    NSDictionary *confirmation = @{
+        @"license": license,
+        @"runtimeSignature": wq_auth_runtime_signature(),
+        @"hardwareID": wq_auth_hardware_id(),
+        @"validatedAt": @(NSDate.date.timeIntervalSince1970),
+    };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:confirmation options:0 error:nil];
+    if (!data) return;
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: kWQAuthConfirmationService,
+        (__bridge id)kSecAttrAccount: kWQAuthConfirmationAccount,
+    };
+    NSDictionary *attributes = @{
+        (__bridge id)kSecValueData: data,
+        (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+    };
+    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)attributes);
+    if (status == errSecItemNotFound) {
+        NSMutableDictionary *item = [query mutableCopy];
+        [item addEntriesFromDictionary:attributes];
+        SecItemAdd((__bridge CFDictionaryRef)item, NULL);
+    }
+}
+
+static void wq_auth_clear_session(void)
+{
+    wq_auth_delete_license();
+    wq_auth_delete_confirmation();
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    [defaults setBool:NO forKey:kWQAuthRememberKey];
+    [defaults removeObjectForKey:kWQAuthValidatedKey];
+    [defaults removeObjectForKey:kWQAuthStatusKey];
+    [defaults removeObjectForKey:kWQAuthMessageKey];
+    [defaults removeObjectForKey:kWQAuthExpiryKey];
+}
+
+static void wq_auth_ensure_runtime_state(void)
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSString *current = wq_auth_runtime_signature();
+    NSString *previous = [defaults stringForKey:kWQAuthRuntimeSignatureKey];
+    if (!previous) {
+        [defaults setObject:current forKey:kWQAuthRuntimeSignatureKey];
+    } else if (![previous isEqualToString:current]) {
+        [defaults setObject:current forKey:kWQAuthRuntimeSignatureKey];
+        wq_auth_clear_session();
+    }
+}
+
+static BOOL wq_auth_session_is_valid(NSString *license)
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSDictionary *confirmation = wq_auth_confirmation();
+    NSString *saved = wq_auth_saved_license();
+    double validatedAt = [confirmation[@"validatedAt"] doubleValue];
+    double now = NSDate.date.timeIntervalSince1970;
+    if (![defaults boolForKey:kWQAuthValidatedKey] || ![saved isEqualToString:license] ||
+        ![confirmation[@"license"] isEqualToString:license] ||
+        ![confirmation[@"runtimeSignature"] isEqualToString:wq_auth_runtime_signature()] ||
+        ![confirmation[@"hardwareID"] isEqualToString:wq_auth_hardware_id()] ||
+        validatedAt <= 0 || now < validatedAt || now - validatedAt > kWQAuthRecentValidationAge ||
+        wq_auth_should_force_logout()) return NO;
+    NSDate *expiry = wq_auth_expiry([defaults stringForKey:kWQAuthExpiryKey]);
+    return !expiry || expiry.timeIntervalSinceNow > 0;
+}
+
+static BOOL wq_auth_should_force_logout(void)
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if (![[defaults stringForKey:kWQAuthRuntimeSignatureKey] isEqualToString:wq_auth_runtime_signature()]) return YES;
+    NSString *status = [defaults stringForKey:kWQAuthStatusKey].lowercaseString ?: @"";
+    for (NSString *invalid in @[@"expired", @"expiration", @"invalid", @"revoked", @"banned", @"used", @"hwid"]) {
+        if ([status containsString:invalid]) return YES;
+    }
+    NSDate *expiry = wq_auth_expiry([defaults stringForKey:kWQAuthExpiryKey]);
+    return expiry && expiry.timeIntervalSinceNow <= 0;
+}
+
+static NSString *wq_auth_expiry_text(NSDate *date)
+{
+    if (!date) return @"";
+    NSISO8601DateFormatter *formatter = [NSISO8601DateFormatter new];
+    formatter.formatOptions = NSISO8601DateFormatWithInternetDateTime | NSISO8601DateFormatWithFractionalSeconds;
+    return [formatter stringFromDate:date];
+}
+
+static void wq_auth_persist_result(NSString *license, BOOL valid, NSString *status, NSDate *expiry)
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    wq_auth_store_license(license);
+    [defaults setBool:valid forKey:kWQAuthValidatedKey];
+    [defaults setObject:status ?: @"unknown" forKey:kWQAuthStatusKey];
+    [defaults setObject:wq_auth_expiry_text(expiry) forKey:kWQAuthExpiryKey];
+    if (valid) wq_auth_store_confirmation(license);
+    else wq_auth_delete_confirmation();
+}
+
+static NSDate *wq_auth_response_expiry(NSDictionary *json, NSString *license, NSString *responseText)
+{
+    NSDictionary *info = [json[@"info"] isKindOfClass:NSDictionary.class] ? json[@"info"] : nil;
+    NSArray *subscriptions = [info[@"subscriptions"] isKindOfClass:NSArray.class] ? info[@"subscriptions"] : nil;
+    NSDictionary *first = [subscriptions.firstObject isKindOfClass:NSDictionary.class] ? subscriptions.firstObject : nil;
+    for (NSString *key in @[@"expiry", @"expires", @"expires_at", @"expiration", @"expirationDate", @"expiration_date", @"expiresAt"]) {
+        NSDate *date = wq_auth_expiry(json[key]);
+        if (date) return date;
+        date = wq_auth_expiry(info[key]);
+        if (date) return date;
+        date = wq_auth_expiry(first[key]);
+        if (date) return date;
+    }
+    NSDate *timeleft = wq_auth_timeleft(first[@"timeleft"]);
+    if (timeleft) return timeleft;
+
+    NSString *upperLicense = license.uppercaseString;
+    double duration = 0;
+    NSString *unit = @"";
+    if ([upperLicense containsString:@"MES"] || [upperLicense containsString:@"MONTH"]) { duration = 1; unit = @"month"; }
+    else if ([upperLicense containsString:@"SEM"] || [upperLicense containsString:@"WEEK"]) { duration = 1; unit = @"week"; }
+    else if ([upperLicense containsString:@"DIA"] || [upperLicense containsString:@"DAY"]) { duration = 1; unit = @"day"; }
+
+    NSString *durationText = responseText ?: @"";
+    NSRegularExpression *expression = [NSRegularExpression regularExpressionWithPattern:@"(\\d+(?:\\.\\d+)?)\\s*(days?|d|weeks?|w|months?|m|hours?|h|horas|dias|semanas|meses)" options:NSRegularExpressionCaseInsensitive error:nil];
+    NSTextCheckingResult *match = [expression firstMatchInString:durationText options:0 range:NSMakeRange(0, durationText.length)];
+    if (!match) {
+        for (id value in json.allValues) {
+            if (![value isKindOfClass:NSString.class]) continue;
+            NSString *candidate = value;
+            match = [expression firstMatchInString:candidate options:0 range:NSMakeRange(0, candidate.length)];
+            if (match) { durationText = candidate; break; }
+        }
+    }
+    if (match.numberOfRanges == 3) {
+        NSString *amount = [durationText substringWithRange:[match rangeAtIndex:1]];
+        NSString *unitText = [[durationText substringWithRange:[match rangeAtIndex:2]] lowercaseString];
+        duration = amount.doubleValue;
+        unit = ([unitText hasPrefix:@"m"] || [unitText containsString:@"mes"]) ? @"month"
+             : ([unitText hasPrefix:@"w"] || [unitText containsString:@"sem"]) ? @"week"
+             : ([unitText hasPrefix:@"h"] || [unitText containsString:@"hora"]) ? @"hour" : @"day";
+    }
+    if (duration <= 0 || !unit.length) return nil;
+
+    NSDate *base = NSDate.date;
+    for (NSString *key in @[@"created", @"created_at", @"creation", @"creation_date", @"date", @"used", @"used_at", @"lastlogin", @"last_login"]) {
+        NSDate *candidate = wq_auth_expiry(json[key]);
+        if (!candidate) candidate = wq_auth_expiry(info[key]);
+        if (candidate) { base = candidate; break; }
+    }
+    if ([unit isEqualToString:@"month"]) {
+        NSInteger wholeMonths = (NSInteger)floor(duration);
+        NSDate *monthDate = wholeMonths > 0
+            ? [[NSCalendar currentCalendar] dateByAddingUnit:NSCalendarUnitMonth value:wholeMonths toDate:base options:0] : base;
+        return [monthDate dateByAddingTimeInterval:(duration - wholeMonths) * 30.0 * 86400.0];
+    }
+    double seconds = [unit isEqualToString:@"week"] ? 7 * 86400.0 : [unit isEqualToString:@"hour"] ? 3600.0 : 86400.0;
+    return [base dateByAddingTimeInterval:duration * seconds];
+}
+
 static NSURL *wq_auth_url(NSArray<NSURLQueryItem *> *items)
 {
     NSURLComponents *components = [NSURLComponents componentsWithString:kWQAuthBaseURL];
@@ -142,6 +355,37 @@ static NSDictionary *wq_auth_json(NSData *data)
     return [object isKindOfClass:NSDictionary.class] ? object : nil;
 }
 
+static NSString *wq_auth_response_preview(NSData *data, NSArray<NSString *> *sensitiveValues)
+{
+    NSString *body = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!body) return @"(el cuerpo no es UTF-8)";
+    NSCharacterSet *unreserved = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"];
+    for (NSString *sensitive in sensitiveValues) {
+        if (!sensitive.length) continue;
+        NSMutableSet<NSString *> *variants = [NSMutableSet setWithObjects:sensitive, sensitive.lowercaseString,
+            sensitive.uppercaseString, nil];
+        NSString *encoded = [sensitive stringByAddingPercentEncodingWithAllowedCharacters:unreserved];
+        if (encoded.length) {
+            [variants addObject:encoded];
+            [variants addObject:encoded.lowercaseString];
+            [variants addObject:encoded.uppercaseString];
+        }
+        for (NSString *variant in variants)
+            body = [body stringByReplacingOccurrencesOfString:variant withString:@"[oculto]" options:NSCaseInsensitiveSearch range:NSMakeRange(0, body.length)];
+    }
+    NSArray<NSString *> *lines = [body componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+    body = [[lines componentsJoinedByString:@" "] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSMutableString *safe = [NSMutableString new];
+    for (NSUInteger i = 0; i < body.length; i++) {
+        unichar c = [body characterAtIndex:i];
+        [safe appendFormat:@"%C", [[NSCharacterSet controlCharacterSet] characterIsMember:c] ? ' ' : c];
+        if (safe.length >= 180) break;
+    }
+    if (body.length > safe.length) [safe appendString:@"…"];
+    return safe.length ? safe : @"(vacío)";
+}
+
 static NSString *wq_auth_string(id value)
 {
     if ([value isKindOfClass:NSString.class]) return value;
@@ -180,6 +424,7 @@ static NSString *wq_auth_response_keys(NSDictionary *response)
 
 static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
 {
+    wq_auth_ensure_runtime_state();
     NSString *appName = wq_auth_config(@"WQKeyAuthAppName");
     NSString *ownerID = wq_auth_config(@"WQKeyAuthOwnerID");
     NSString *secret = wq_auth_config(@"WQKeyAuthSecret");
@@ -229,8 +474,9 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         if (!initJSON) {
             NSString *contentType = [httpInit.allHeaderFields[@"Content-Type"] isKindOfClass:NSString.class]
                 ? httpInit.allHeaderFields[@"Content-Type"] : @"desconocido";
-            completion(NO, [NSString stringWithFormat:@"KeyAuth respondió HTTP %ld con contenido %@, no con un objeto JSON.",
-                            (long)httpInit.statusCode, contentType], NO);
+            NSString *preview = wq_auth_response_preview(initData ?: [NSData data], @[secret, appName, ownerID]);
+            completion(NO, [NSString stringWithFormat:@"KeyAuth respondió HTTP %ld con contenido %@, no con un objeto JSON. Respuesta: %@",
+                            (long)httpInit.statusCode, contentType, preview], NO);
             return;
         }
         id rawSuccess = initJSON[@"success"];
@@ -275,14 +521,44 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         [licenseRequest setValue:@"KeyAuth" forHTTPHeaderField:@"User-Agent"];
         [[session dataTaskWithRequest:licenseRequest completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             NSDictionary *json = data ? wq_auth_json(data) : nil;
-            NSNumber *success = json[@"success"];
-            if (error || ![response isKindOfClass:NSHTTPURLResponse.class] ||
-                ((NSHTTPURLResponse *)response).statusCode < 200 || ((NSHTTPURLResponse *)response).statusCode >= 300) {
-                completion(NO, @"No se pudo conectar con KeyAuth. Inténtalo de nuevo.", NO);
+            NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
+            if (error) {
+                completion(NO, [NSString stringWithFormat:@"No se pudo conectar con KeyAuth: %@", error.localizedDescription], NO);
                 return;
             }
-            if (![success isKindOfClass:NSNumber.class] || !success.boolValue) {
+            if (!http) {
+                completion(NO, @"KeyAuth devolvió una respuesta de licencia que no es HTTP.", NO);
+                return;
+            }
+            if (http.statusCode < 200 || http.statusCode >= 300) {
+                completion(NO, [NSString stringWithFormat:@"KeyAuth respondió con HTTP %ld al validar la licencia.", (long)http.statusCode], NO);
+                return;
+            }
+            if (!json) {
+                NSString *contentType = [http.allHeaderFields[@"Content-Type"] isKindOfClass:NSString.class]
+                    ? http.allHeaderFields[@"Content-Type"] : @"desconocido";
+                NSString *preview = wq_auth_response_preview(data ?: [NSData data], @[cleanLicense, secret, appName, ownerID]);
+                completion(NO, [NSString stringWithFormat:@"La respuesta de licencia no es JSON (%@). Respuesta: %@", contentType, preview], NO);
+                return;
+            }
+            id rawSuccess = json[@"success"];
+            if (!rawSuccess || rawSuccess == NSNull.null) {
+                completion(NO, [NSString stringWithFormat:@"El JSON de licencia no contiene 'success'. Campos recibidos: %@.",
+                                wq_auth_response_keys(json)], NO);
+                return;
+            }
+            BOOL successRecognized = NO;
+            BOOL success = wq_auth_boolean(rawSuccess, &successRecognized);
+            if (!successRecognized) {
+                completion(NO, [NSString stringWithFormat:@"El campo 'success' de licencia tiene formato no reconocido (%@). Campos recibidos: %@.",
+                                NSStringFromClass([rawSuccess class]), wq_auth_response_keys(json)], NO);
+                return;
+            }
+            NSString *status = [[@[wq_auth_string(json[@"status"]), wq_auth_string(json[@"result"]),
+                                   wq_auth_string(json[@"expiry"])] componentsJoinedByString:@" "] lowercaseString];
+            if (!success) {
                 NSString *message = [json[@"message"] isKindOfClass:NSString.class] ? json[@"message"] : @"Licencia inválida o expirada.";
+                wq_auth_persist_result(cleanLicense, NO, status.length ? status : @"invalid", nil);
                 completion(NO, message, YES);
                 return;
             }
@@ -292,31 +568,33 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
             id rawHWID = json[@"hwid"] ?: info[@"hwid"];
             NSString *serverHWID = [rawHWID isKindOfClass:NSString.class] ? rawHWID : @"";
             if (serverHWID.length && ![serverHWID isEqualToString:wq_auth_hardware_id()]) {
+                wq_auth_persist_result(cleanLicense, NO, @"hwid_mismatch", nil);
                 completion(NO, @"La licencia está vinculada a otro dispositivo.", YES);
                 return;
             }
-            id rawExpiry = json[@"expiry"] ?: firstSubscription[@"expiry"];
-            NSDate *expiry = wq_auth_expiry(rawExpiry);
-            if (!expiry) expiry = wq_auth_timeleft(firstSubscription[@"timeleft"]);
-            if (expiry && expiry.timeIntervalSinceNow <= 0) {
-                completion(NO, @"La licencia expiró.", YES);
-                return;
-            }
-            NSString *status = [[@[wq_auth_string(json[@"status"]), wq_auth_string(json[@"result"]),
-                                   wq_auth_string(json[@"message"]), wq_auth_string(json[@"error"])]
-                                  componentsJoinedByString:@" "] lowercaseString];
-            for (NSString *word in @[@"expired", @"invalid", @"revoked", @"banned", @"denied", @"already used", @"already in use"]) {
+            for (NSString *word in @[@"expired", @"expiration", @"invalid", @"not valid", @"not found", @"error", @"failed", @"denied", @"revoked", @"banned", @"already used", @"already in use", @"used"]) {
                 if ([status containsString:word]) {
-                    completion(NO, @"La licencia no está activa.", YES);
+                    wq_auth_persist_result(cleanLicense, NO, status, nil);
+                    completion(NO, status, YES);
                     return;
                 }
             }
+            NSDate *expiry = wq_auth_response_expiry(json, cleanLicense, status);
+            if (expiry && expiry.timeIntervalSinceNow <= 0) {
+                wq_auth_persist_result(cleanLicense, NO, @"expired", expiry);
+                completion(NO, @"La licencia expiró.", YES);
+                return;
+            }
+            wq_auth_persist_result(cleanLicense, YES, status.length ? status : @"valid", expiry);
             completion(YES, @"", NO);
         }] resume];
     }] resume];
 }
 
 @interface WQAuthGateViewController ()
+- (void)completeAuthenticationForLicense:(NSString *)license;
+- (void)revalidateSession;
+- (void)expireSessionWithMessage:(NSString *)message;
 @end
 
 @implementation WQAuthGateViewController {
@@ -326,6 +604,9 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
     UIActivityIndicatorView *_spinner;
     UILabel *_statusLabel;
     BOOL _validating;
+    BOOL _sessionCheckInFlight;
+    NSString *_activeLicense;
+    NSTimer *_sessionTimer;
 }
 
 - (void)viewDidLoad
@@ -348,7 +629,10 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
     _rememberSwitch.on = remember;
     NSString *saved = remember ? wq_auth_saved_license() : @"";
     _licenseField.text = saved;
-    if (saved.length) [self validateLicense:saved automatic:YES];
+    if (saved.length && remember) {
+        if (wq_auth_session_is_valid(saved)) [self completeAuthenticationForLicense:saved];
+        else [self validateLicense:saved automatic:YES];
+    }
 }
 
 - (void)buildInterface
@@ -537,13 +821,69 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
             }
             BOOL remember = screen->_rememberSwitch.isOn;
             [NSUserDefaults.standardUserDefaults setBool:remember forKey:kWQAuthRememberKey];
-            if (remember) wq_auth_store_license([license stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]);
-            else wq_auth_delete_license();
-            void (^authenticated)(NSURL *) = screen.onAuthenticated;
-            NSURL *pendingURL = screen.pendingURL;
-            if (authenticated) authenticated(pendingURL);
+            [screen completeAuthenticationForLicense:[license stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
         });
     });
+}
+
+- (void)completeAuthenticationForLicense:(NSString *)license
+{
+    _activeLicense = [license copy];
+    [self beginSessionMonitoring];
+    void (^authenticated)(NSURL *) = self.onAuthenticated;
+    NSURL *pendingURL = self.pendingURL;
+    self.pendingURL = nil;
+    if (authenticated) authenticated(pendingURL);
+}
+
+- (void)beginSessionMonitoring
+{
+    if (!_activeLicense.length || _sessionTimer.valid) return;
+    _sessionTimer = [NSTimer scheduledTimerWithTimeInterval:10.0 target:self
+        selector:@selector(revalidateSession) userInfo:nil repeats:YES];
+}
+
+- (void)revalidateSession
+{
+    if (_sessionCheckInFlight || !_activeLicense.length) return;
+    if (wq_auth_should_force_logout()) {
+        [self expireSessionWithMessage:@"La licencia venció o fue revocada. Inicia sesión de nuevo."];
+        return;
+    }
+    NSString *license = [_activeLicense copy];
+    BOOL recentConfirmation = wq_auth_session_is_valid(license);
+    _sessionCheckInFlight = YES;
+    __weak typeof(self) weakSelf = self;
+    wq_auth_validate(license, ^(BOOL valid, NSString *message, BOOL definitiveFailure) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQAuthGateViewController *screen = weakSelf;
+            if (!screen) return;
+            screen->_sessionCheckInFlight = NO;
+            if (valid) return;
+            if (definitiveFailure || !recentConfirmation) {
+                [screen expireSessionWithMessage:message.length ? message : @"La sesión de KeyAuth ya no es válida. Inicia sesión de nuevo."];
+            }
+        });
+    });
+}
+
+- (void)expireSessionWithMessage:(NSString *)message
+{
+    [_sessionTimer invalidate];
+    _sessionTimer = nil;
+    _activeLicense = nil;
+    wq_auth_clear_session();
+    _rememberSwitch.on = NO;
+    _licenseField.text = @"";
+    _statusLabel.text = message;
+    _statusLabel.textColor = UIColor.systemRedColor;
+    void (^expired)(void) = self.onAuthenticationExpired;
+    if (expired) expired();
+}
+
+- (void)showSessionExpired
+{
+    [self expireSessionWithMessage:@"La sesión de KeyAuth venció. Inicia sesión de nuevo."];
 }
 
 @end
