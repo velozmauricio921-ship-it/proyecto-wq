@@ -6,8 +6,6 @@
 #import <math.h>
 
 static NSString *const kWQAuthRememberKey = @"WQKeyAuthRememberLicense";
-static NSString *const kWQAuthLicenseService = @"cz.kolbi.wqfiles.keyauth.license";
-static NSString *const kWQAuthLicenseAccount = @"license";
 static NSString *const kWQAuthConfirmationService = @"cz.kolbi.wqfiles.keyauth.confirmation";
 static NSString *const kWQAuthConfirmationAccount = @"validated-license";
 static NSString *const kWQAuthRuntimeSignatureKey = @"WQKeyAuthRuntimeSignature";
@@ -27,6 +25,7 @@ static NSString *wq_auth_config(NSString *key)
 }
 
 static NSDate *wq_auth_expiry(id value);
+static NSDate *wq_auth_timeleft(id value);
 static void wq_auth_ensure_runtime_state(void);
 static BOOL wq_auth_should_force_logout(void);
 
@@ -379,7 +378,8 @@ static NSString *wq_auth_response_preview(NSData *data, NSArray<NSString *> *sen
     NSMutableString *safe = [NSMutableString new];
     for (NSUInteger i = 0; i < body.length; i++) {
         unichar c = [body characterAtIndex:i];
-        [safe appendFormat:@"%C", [[NSCharacterSet controlCharacterSet] characterIsMember:c] ? ' ' : c];
+        unichar safeCharacter = [[NSCharacterSet controlCharacterSet] characterIsMember:c] ? (unichar)' ' : c;
+        [safe appendFormat:@"%C", safeCharacter];
         if (safe.length >= 180) break;
     }
     if (body.length > safe.length) [safe appendString:@"…"];
@@ -387,8 +387,6 @@ static NSString *wq_auth_response_preview(NSData *data, NSArray<NSString *> *sen
 }
 
 static NSString *wq_auth_string(id value)
-{
-    if ([value isKindOfClass:NSString.class]) return value;
     if ([value isKindOfClass:NSNumber.class]) return [value stringValue];
     return @"";
 }
@@ -563,8 +561,6 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
                 return;
             }
             NSDictionary *info = [json[@"info"] isKindOfClass:NSDictionary.class] ? json[@"info"] : nil;
-            NSArray *subscriptions = [info[@"subscriptions"] isKindOfClass:NSArray.class] ? info[@"subscriptions"] : nil;
-            NSDictionary *firstSubscription = [subscriptions.firstObject isKindOfClass:NSDictionary.class] ? subscriptions.firstObject : nil;
             id rawHWID = json[@"hwid"] ?: info[@"hwid"];
             NSString *serverHWID = [rawHWID isKindOfClass:NSString.class] ? rawHWID : @"";
             if (serverHWID.length && ![serverHWID isEqualToString:wq_auth_hardware_id()]) {
