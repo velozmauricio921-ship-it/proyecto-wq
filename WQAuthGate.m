@@ -319,6 +319,14 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         [icon.centerXAnchor constraintEqualToAnchor:brandTile.centerXAnchor], [icon.centerYAnchor constraintEqualToAnchor:brandTile.centerYAnchor],
         [icon.widthAnchor constraintEqualToConstant:28], [icon.heightAnchor constraintEqualToConstant:28],
     ]];
+    UIView *brandRow = [UIView new];
+    brandRow.translatesAutoresizingMaskIntoConstraints = NO;
+    [brandRow addSubview:brandTile];
+    [NSLayoutConstraint activateConstraints:@[
+        [brandRow.heightAnchor constraintEqualToConstant:58],
+        [brandTile.centerXAnchor constraintEqualToAnchor:brandRow.centerXAnchor],
+        [brandTile.centerYAnchor constraintEqualToAnchor:brandRow.centerYAnchor],
+    ]];
     UILabel *title = [UILabel new];
     title.text = @"BAIJ STORE MOD";
     title.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
@@ -411,21 +419,21 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         [form.trailingAnchor constraintEqualToAnchor:surface.trailingAnchor constant:-20],
     ]];
 
-    [stack addArrangedSubview:brandTile];
+    [stack addArrangedSubview:brandRow];
     [stack addArrangedSubview:title];
     [stack addArrangedSubview:message];
     [stack addArrangedSubview:surface];
     [scroll addSubview:stack];
-    NSLayoutConstraint *stackWidth = [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-44];
-    stackWidth.priority = UILayoutPriorityDefaultHigh;
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor], [scroll.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor],
         [scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor], [scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:32],
         [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-32],
+        [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:scroll.frameLayoutGuide.leadingAnchor constant:22],
+        [stack.trailingAnchor constraintLessThanOrEqualToAnchor:scroll.frameLayoutGuide.trailingAnchor constant:-22],
         [stack.centerXAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.centerXAnchor],
-        stackWidth,
+        [stack.widthAnchor constraintGreaterThanOrEqualToConstant:260],
         [stack.widthAnchor constraintLessThanOrEqualToConstant:520],
     ]];
 }
