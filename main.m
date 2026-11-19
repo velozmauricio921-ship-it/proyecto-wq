@@ -37,6 +37,7 @@
 #import "WQSyntax.h"
 #import "WQMediaStream.h"
 #import "WQInspector.h"
+#import "WQPatchReader.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
@@ -161,7 +162,7 @@ static void wq_folder_size_forget(NSString *path)
 
 #pragma mark - File viewer
 
-typedef NS_ENUM(NSInteger, WQOpenMode) { WQOpenAuto, WQOpenPlist, WQOpenText, WQOpenHex, WQOpenSQLite, WQOpenMedia };
+typedef NS_ENUM(NSInteger, WQOpenMode) { WQOpenAuto, WQOpenPlist, WQOpenText, WQOpenHex, WQOpenSQLite, WQOpenMedia, WQOpenPatch };
 // Opens a file in the fitting viewer (Auto: chosen from its first bytes).
 static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readOnly, WQOpenMode mode);
 static void wq_add_recent(NSString *rawPath, NSString *title, BOOL directory, BOOL readOnly);
@@ -590,6 +591,7 @@ static WQOpenMode wq_sniff(NSData *head)
 {
     const uint8_t *b = head.bytes;
     NSUInteger n = head.length;
+    if (n >= 10 && memcmp(b, "3105PATCH\0", 10) == 0) return WQOpenPatch;
     if (n >= 7 && memcmp(b, "bplist0", 7) == 0) return WQOpenPlist;
     if (wq_is_sqlite_header(head)) return WQOpenSQLite;
     if ((n >= 8 && memcmp(b, "\x89PNG", 4) == 0) || (n >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff) ||
@@ -768,6 +770,10 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
             wq_open_media(nav, path, ^BOOL { return request == wq_open_generation && nav.topViewController == origin; });
             return;
         }
+        if (m == WQOpenPatch) {
+            [nav pushViewController:[[WQPatchReaderViewController alloc] initWithPath:path] animated:YES];
+            return;
+        }
         UIViewController *vc;
         if (m == WQOpenPlist) {
             WQPlistEditorViewController *editor = [[WQPlistEditorViewController alloc] initWithPath:path readOnly:readOnly];
@@ -796,6 +802,7 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
         return;
     }
     if (mode == WQOpenAuto && wq_is_media_name(path)) mode = WQOpenMedia;
+    if (mode == WQOpenAuto && [path.pathExtension caseInsensitiveCompare:@"3105"] == NSOrderedSame) mode = WQOpenPatch;
     if (mode != WQOpenAuto) { push(mode); return; }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSData *head = wq_permission_hint(path, NO) ? nil : wq_read_range(path, 0, 4096, NULL);
@@ -6544,7 +6551,7 @@ static NSString *const kWQTroubleshootingFooter =
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return 3;
+    return 4;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
@@ -6557,8 +6564,8 @@ static NSString *const kWQTroubleshootingFooter =
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"prism-vault"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"prism-vault"];
     UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
-    NSArray<NSString *> *titles = @[@"App Backups", @"File Backups", @"Recently Deleted"];
-    NSArray<NSString *> *symbols = @[@"clock.arrow.circlepath", @"archivebox", @"trash.circle"];
+    NSArray<NSString *> *titles = @[@"App Backups", @"File Backups", @"Recently Deleted", @"Patches"];
+    NSArray<NSString *> *symbols = @[@"clock.arrow.circlepath", @"archivebox", @"trash.circle", @"doc.zipper"];
     c.text = WQLocalizedNullable(titles[(NSUInteger)indexPath.row]);
     c.image = [UIImage systemImageNamed:symbols[(NSUInteger)indexPath.row]];
     cell.contentConfiguration = c;
@@ -6612,8 +6619,10 @@ static NSString *const kWQTroubleshootingFooter =
         [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         UIViewController *next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:WQLocalizedNullable(@"File Backups")];
         [self.navigationController pushViewController:next animated:YES];
-    } else {
+    } else if (indexPath.row == 2) {
         [self.navigationController pushViewController:[WQRecentlyDeletedViewController new] animated:YES];
+    } else {
+        [self.navigationController pushViewController:[WQPatchReaderViewController new] animated:YES];
     }
 }
 
@@ -6998,7 +7007,7 @@ static NSString *const kWQTroubleshootingFooter =
     // System Groups is the extra last row, on iOS 27 only.
     if (section == 3) return 1;
     if (section == 2) return 9;   // row 7: Sharing Password, row 8: Show Folder Sizes
-    return section == 0 ? (NSInteger)_locations.count + (wq_system_areas_reachable() ? 1 : 0) : 10;
+    return section == 0 ? (NSInteger)_locations.count + (wq_system_areas_reachable() ? 1 : 0) : 11;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
@@ -7098,7 +7107,7 @@ static NSString *const kWQTroubleshootingFooter =
         NSArray *tools = @[@[@"Apps", @"square.grid.3x3"], @[@"Cache Cleaner", @"trash"], @[@"Go to Path…", @"arrow.right.circle"],
                            @[@"App Backups", @"clock.arrow.circlepath"], @[@"Backups", @"clock.arrow.circlepath"],
                            @[@"Recently Deleted", @"trash.circle"], @[@"Log", @"doc.plaintext"], @[@"Favorites", @"star"],
-                           @[@"Recent", @"clock"], @[@"Inspectors", @"curlybraces"]];
+                           @[@"Recent", @"clock"], @[@"Inspectors", @"curlybraces"], @[@"Patches", @"doc.zipper"]];
         c.text = WQLocalizedNullable(tools[(NSUInteger)indexPath.row][0]);
         c.image = [UIImage systemImageNamed:tools[(NSUInteger)indexPath.row][1]];
     }
@@ -7153,6 +7162,8 @@ static NSString *const kWQTroubleshootingFooter =
     } else if (indexPath.row == 9) {
         wq_open_inspectors_folder(self.navigationController);
         return;
+    } else if (indexPath.row == 10) {
+        next = [WQPatchReaderViewController new];
     } else {
         next = [WQLogViewController new];
     }
@@ -7479,6 +7490,19 @@ static UIViewController *wq_top_view_controller(void);
         NSString *ext = url.pathExtension.lowercaseString;
         if ([ext isEqualToString:@"wqtheme"])
             dispatch_async(dispatch_get_main_queue(), ^{ wq_import_theme_url(wq_top_view_controller(), url); });
+        else if ([ext isEqualToString:@"3105"])
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIViewController *host = wq_top_view_controller();
+                UINavigationController *nav = host.navigationController;
+                if (!nav && [host isKindOfClass:UITabBarController.class])
+                    nav = (UINavigationController *)((UITabBarController *)host).selectedViewController;
+                if (nav) [nav pushViewController:[[WQPatchReaderViewController alloc] initWithURL:url] animated:YES];
+                else if (host) {
+                    WQNavigationController *reader = [[WQNavigationController alloc]
+                        initWithRootViewController:[[WQPatchReaderViewController alloc] initWithURL:url]];
+                    [host presentViewController:reader animated:YES completion:nil];
+                }
+            });
         else if ([ext isEqualToString:@"zip"])   // a custom inspector (#45)
             dispatch_async(dispatch_get_main_queue(), ^{ wq_install_inspector_url(wq_top_view_controller(), url); });
     }
