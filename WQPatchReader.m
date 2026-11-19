@@ -1,8 +1,15 @@
 #import "WQPatchReader.h"
 #import "WQAccess.h"
+#import "WQUI.h"
 #import <CommonCrypto/CommonCryptor.h>
 #import <CommonCrypto/CommonKeyDerivation.h>
 #import <CommonCrypto/CommonDigest.h>
+
+// CommonCrypto implements this GCM SPI, but the iOS SDK omits its declaration.
+extern CCCryptorStatus CCCryptorGCMOneshotDecrypt(CCAlgorithm algorithm, const void *key, size_t keyLength,
+    const void *iv, size_t ivLength, const void *aad, size_t aadLength,
+    const void *ciphertext, size_t ciphertextLength, void *plaintext,
+    const void *tag, size_t tagLength);
 
 static const NSUInteger WQPatchReaderMaximumPackageBytes = 512u * 1024u * 1024u;
 static const NSUInteger WQPatchReaderMaximumEntries = 100000;
@@ -41,6 +48,11 @@ static NSData *wq_patch_sha256(NSData *data)
     uint8_t digest[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256_Final(digest, &context);
     return [NSData dataWithBytes:digest length:sizeof(digest)];
+}
+
+static void wq_patch_set_error(NSString **error, NSString *message)
+{
+    if (error) *error = message;
 }
 
 static NSData *wq_patch_gcm_open(NSData *combined, NSData *key, NSData *aad)
@@ -110,19 +122,15 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
 
 + (instancetype)decode:(NSData *)data password:(NSString *)password error:(NSString **)error
 {
-    void (^fail)(NSInteger, NSString *) = ^(NSInteger code, NSString *message) {
-        if (error) *error = message;
-        (void)code;
-    };
     if (data.length > WQPatchReaderMaximumPackageBytes || data.length <= sizeof(WQPatchReaderMagic) ||
         memcmp(data.bytes, WQPatchReaderMagic, sizeof(WQPatchReaderMagic)) != 0) {
-        fail(0, @"This is not a supported .3105 patch package.");
+        wq_patch_set_error(error, @"This is not a supported .3105 patch package.");
         return nil;
     }
     NSData *body = [data subdataWithRange:NSMakeRange(sizeof(WQPatchReaderMagic), data.length - sizeof(WQPatchReaderMagic))];
     NSDictionary *envelope = [NSPropertyListSerialization propertyListWithData:body options:0 format:nil error:nil];
     if (![envelope isKindOfClass:NSDictionary.class]) {
-        fail(0, @"The patch package is damaged or incomplete.");
+        wq_patch_set_error(error, @"The patch package is damaged or incomplete.");
         return nil;
     }
     NSNumber *schema = envelope[@"schemaVersion"];
@@ -134,12 +142,12 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
         ![packageID isKindOfClass:NSString.class] ||
         ![fingerprint isKindOfClass:NSData.class] || fingerprint.length != 32 ||
         ![encryptedPayload isKindOfClass:NSData.class] || encryptedPayload.length < 28) {
-        fail(0, @"The patch package header is invalid or uses an unsupported version.");
+        wq_patch_set_error(error, @"The patch package header is invalid or uses an unsupported version.");
         return nil;
     }
     NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:packageID];
     if (!uuid) {
-        fail(0, @"The patch package header is invalid.");
+        wq_patch_set_error(error, @"The patch package header is invalid.");
         return nil;
     }
 
@@ -154,7 +162,7 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
         NSData *wrappedKey = envelope[@"wrappedContentKey"];
         if (![iterations isKindOfClass:NSNumber.class] || ![salt isKindOfClass:NSData.class] ||
             ![wrappedKey isKindOfClass:NSData.class]) {
-            fail(0, @"The protected package header is invalid.");
+            wq_patch_set_error(error, @"The protected package header is invalid.");
             return nil;
         }
         NSData *wrappingKey = wq_patch_password_key(password, salt, iterations.unsignedIntegerValue);
@@ -167,7 +175,7 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
     }
     if (![contentKey isKindOfClass:NSData.class] || contentKey.length != 32 ||
         ![wq_patch_sha256(contentKey) isEqualToData:fingerprint]) {
-        fail(0, protected ? @"The password is incorrect or the package is damaged." : @"The package key is invalid.");
+        wq_patch_set_error(error, protected ? @"The password is incorrect or the package is damaged." : @"The package key is invalid.");
         return nil;
     }
     NSString *payloadAAD = [NSString stringWithFormat:@"3105PATCH/v%ld/payload/%@", (long)schema.integerValue, uuid.UUIDString];
@@ -184,7 +192,7 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
         ![projectID isKindOfClass:NSString.class] || ![[[NSUUID alloc] initWithUUIDString:projectID] isEqual:uuid] ||
         ![name isKindOfClass:NSString.class] || rules.count + directories.count > WQPatchReaderMaximumEntries ||
         digests.count != rules.count) {
-        fail(0, @"The package payload is invalid or failed authentication.");
+        wq_patch_set_error(error, @"The package payload is invalid or failed authentication.");
         return nil;
     }
 
@@ -192,7 +200,7 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
     NSMutableSet<NSString *> *targets = [NSMutableSet new];
     for (id directoryValue in directories) {
         if (![directoryValue isKindOfClass:NSDictionary.class]) {
-            fail(0, @"The package contains an invalid folder entry.");
+            wq_patch_set_error(error, @"The package contains an invalid folder entry.");
             return nil;
         }
         NSDictionary *directory = directoryValue;
@@ -201,7 +209,7 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
         if (![bundle isKindOfClass:NSString.class] ||
             ![path isKindOfClass:NSString.class] || !wq_patch_valid_bundle(bundle) || !wq_patch_safe_relative_path(path) ||
             [targets containsObject:target]) {
-            fail(0, @"The package contains an invalid or duplicate target path.");
+            wq_patch_set_error(error, @"The package contains an invalid or duplicate target path.");
             return nil;
         }
         [targets addObject:target];
@@ -211,7 +219,7 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
     }
     for (id ruleValue in rules) {
         if (![ruleValue isKindOfClass:NSDictionary.class]) {
-            fail(0, @"The package contains an invalid replacement entry.");
+            wq_patch_set_error(error, @"The package contains an invalid replacement entry.");
             return nil;
         }
         NSDictionary *rule = ruleValue;
@@ -227,7 +235,7 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
             ![replacement isKindOfClass:NSData.class] || ![digest isKindOfClass:NSData.class] ||
             !wq_patch_valid_bundle(bundle) || !wq_patch_safe_relative_path(path) ||
             [targets containsObject:target] || ![wq_patch_sha256(replacement) isEqualToData:digest]) {
-            fail(0, @"The package contains an invalid, duplicate, or damaged replacement.");
+            wq_patch_set_error(error, @"The package contains an invalid, duplicate, or damaged replacement.");
             return nil;
         }
         [targets addObject:target];
@@ -490,11 +498,15 @@ static NSArray<NSString *> *wq_patch_bundled_paths(NSString *root)
         if (_sourcePath.length || _sourceURL || _packageData) return _status;
         return _preloadedPaths.count ? @"Bundled packages are read-only." : @"No preloaded .3105 packages are included.";
     }
-    if (section == 0) return [NSString stringWithFormat:@"%@\n%lu files · %lu folders · schema v%ld · read only",
-        [_package.entries valueForKeyPath:@"@distinctUnionOfObjects.bundleID"].description,
-        (unsigned long)[_package.entries filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"directory == NO"]].count,
-        (unsigned long)[_package.entries filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"directory == YES"]].count,
-        (long)_package.schemaVersion];
+    if (section == 0) {
+        NSMutableOrderedSet<NSString *> *bundleIDs = [NSMutableOrderedSet new];
+        for (WQPatchReaderEntry *entry in _package.entries) [bundleIDs addObject:entry.bundleID];
+        NSString *bundleSummary = [bundleIDs.array componentsJoinedByString:@", "];
+        NSUInteger fileCount = [_package.entries filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"directory == NO"]].count;
+        NSUInteger directoryCount = [_package.entries filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"directory == YES"]].count;
+        return [NSString stringWithFormat:@"%@\n%lu files · %lu folders · schema v%ld · read only",
+                bundleSummary, (unsigned long)fileCount, (unsigned long)directoryCount, (long)_package.schemaVersion];
+    }
     return @"Package contents are read-only. Nothing is applied or changed.";
 }
 
