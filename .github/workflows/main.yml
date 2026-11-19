@@ -25,6 +25,9 @@ jobs:
         env:
           WQFILES_FINAL_IPA: ${{ github.workspace }}/BAIJ-STORE-MOD.ipa
           WQ_SKIP_PREFLIGHT: "1"
+          KEYAUTH_SECRET: ${{ secrets.KEYAUTH_SECRET }}
+          KEYAUTH_OWNER_ID: ${{ secrets.KEYAUTH_OWNER_ID || vars.KEYAUTH_OWNER_ID }}
+          KEYAUTH_APP_NAME: ${{ secrets.KEYAUTH_APP_NAME || vars.KEYAUTH_APP_NAME }}
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
