@@ -85,8 +85,14 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
     -isysroot "$SDK" -Wall -Wextra -Werror -O2 ${WQ_EXTRA_CFLAGS:-} \
     -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers -framework JavaScriptCore \
-    WQCore.m WQAccess.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQPatchReader.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQWebServer.m WQTheme.m WQInspector.m main.m -lsqlite3 -lz -o "$APP/WQFiles"
+    WQCore.m WQAccess.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQAuthGate.m WQPatchReader.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQWebServer.m WQTheme.m WQInspector.m main.m -lsqlite3 -lz -o "$APP/WQFiles"
 cp Info.plist "$APP/Info.plist"
+# Create WQ Files-specific KeyAuth entries from CI configuration without changing the source plist.
+if [[ -n "${KEYAUTH_SECRET:-}" && -n "${KEYAUTH_OWNER_ID:-}" && -n "${KEYAUTH_APP_NAME:-}" ]]; then
+    /usr/bin/plutil -insert WQKeyAuthAppName -string "$KEYAUTH_APP_NAME" "$APP/Info.plist"
+    /usr/bin/plutil -insert WQKeyAuthOwnerID -string "$KEYAUTH_OWNER_ID" "$APP/Info.plist"
+    /usr/bin/plutil -insert WQKeyAuthSecret -string "$KEYAUTH_SECRET" "$APP/Info.plist"
+fi
 # App icon with the iOS 18+ dark and tinted variants (issue #47): a catalog
 # built from icons/ and compiled by actool into Assets.car plus the classic
 # PNGs; its CFBundleIcons replace the plain PNG list in Info.plist.
