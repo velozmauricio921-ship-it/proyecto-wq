@@ -164,10 +164,7 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         return;
     }
 
-    NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
-    configuration.timeoutIntervalForRequest = 20;
-    configuration.HTTPCookieStorage = nil;
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration];
+    NSURLSession *session = NSURLSession.sharedSession;
     NSArray<NSURLQueryItem *> *initItems = @[
         [NSURLQueryItem queryItemWithName:@"type" value:@"init"],
         [NSURLQueryItem queryItemWithName:@"name" value:appName],
@@ -177,22 +174,42 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
     ];
     NSURL *initURL = wq_auth_url(initItems);
     if (!initURL) {
-        [session finishTasksAndInvalidate];
         completion(NO, @"La configuración de KeyAuth no es válida.", YES);
         return;
     }
     NSMutableURLRequest *initRequest = [NSMutableURLRequest requestWithURL:initURL];
     initRequest.HTTPMethod = @"GET";
+    initRequest.timeoutInterval = 20;
     [initRequest setValue:@"KeyAuth" forHTTPHeaderField:@"User-Agent"];
     [[session dataTaskWithRequest:initRequest completionHandler:^(NSData *initData, NSURLResponse *initResponse, NSError *initError) {
         NSDictionary *initJSON = initData ? wq_auth_json(initData) : nil;
         NSHTTPURLResponse *httpInit = [initResponse isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)initResponse : nil;
         NSNumber *initSuccess = initJSON[@"success"];
         NSString *sessionID = [initJSON[@"sessionid"] isKindOfClass:NSString.class] ? initJSON[@"sessionid"] : nil;
-        if (initError || !httpInit || httpInit.statusCode < 200 || httpInit.statusCode >= 300 ||
-            ![initSuccess isKindOfClass:NSNumber.class] || !initSuccess.boolValue || !sessionID.length) {
-            [session finishTasksAndInvalidate];
-            completion(NO, @"No se pudo iniciar una sesión con KeyAuth. Revisa tu conexión e inténtalo de nuevo.", NO);
+        if (initError) {
+            completion(NO, [NSString stringWithFormat:@"No se pudo conectar con KeyAuth: %@", initError.localizedDescription], NO);
+            return;
+        }
+        if (!httpInit) {
+            completion(NO, @"KeyAuth devolvió una respuesta que no es HTTP.", NO);
+            return;
+        }
+        if (httpInit.statusCode < 200 || httpInit.statusCode >= 300) {
+            completion(NO, [NSString stringWithFormat:@"KeyAuth respondió con HTTP %ld al iniciar sesión.", (long)httpInit.statusCode], NO);
+            return;
+        }
+        if (![initSuccess isKindOfClass:NSNumber.class]) {
+            completion(NO, @"KeyAuth devolvió JSON inválido al iniciar sesión.", NO);
+            return;
+        }
+        if (!initSuccess.boolValue) {
+            NSString *serverMessage = [initJSON[@"message"] isKindOfClass:NSString.class] ? initJSON[@"message"] : @"KeyAuth rechazó la configuración de WQ.";
+            if (serverMessage.length > 180) serverMessage = [[serverMessage substringToIndex:180] stringByAppendingString:@"…"];
+            completion(NO, [NSString stringWithFormat:@"KeyAuth: %@", serverMessage], YES);
+            return;
+        }
+        if (!sessionID.length) {
+            completion(NO, @"KeyAuth confirmó el inicio, pero no devolvió un session ID.", NO);
             return;
         }
         NSArray<NSURLQueryItem *> *licenseItems = @[
@@ -205,15 +222,14 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         ];
         NSURL *licenseURL = wq_auth_url(licenseItems);
         if (!licenseURL) {
-            [session finishTasksAndInvalidate];
             completion(NO, @"La configuración de KeyAuth no es válida.", YES);
             return;
         }
         NSMutableURLRequest *licenseRequest = [NSMutableURLRequest requestWithURL:licenseURL];
         licenseRequest.HTTPMethod = @"GET";
+        licenseRequest.timeoutInterval = 20;
         [licenseRequest setValue:@"KeyAuth" forHTTPHeaderField:@"User-Agent"];
         [[session dataTaskWithRequest:licenseRequest completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-            [session finishTasksAndInvalidate];
             NSDictionary *json = data ? wq_auth_json(data) : nil;
             NSNumber *success = json[@"success"];
             if (error || ![response isKindOfClass:NSHTTPURLResponse.class] ||
