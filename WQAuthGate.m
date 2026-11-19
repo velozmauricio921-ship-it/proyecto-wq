@@ -1,5 +1,6 @@
 #import "WQAuthGate.h"
 #import "WQTheme.h"
+#import "WQUI.h"
 #import <Security/Security.h>
 #import <math.h>
 
@@ -102,7 +103,7 @@ static NSDate *wq_auth_expiry(id value)
     NSScanner *scanner = [NSScanner scannerWithString:text];
     double number = 0;
     if ([scanner scanDouble:&number] && scanner.isAtEnd) return wq_auth_expiry(@(number));
-    ISO8601DateFormatter *iso = [ISO8601DateFormatter new];
+    NSISO8601DateFormatter *iso = [NSISO8601DateFormatter new];
     iso.formatOptions = NSISO8601DateFormatWithInternetDateTime | NSISO8601DateFormatWithFractionalSeconds;
     NSDate *date = [iso dateFromString:text];
     if (!date) {
