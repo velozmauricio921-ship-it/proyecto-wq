@@ -85,7 +85,7 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
     -isysroot "$SDK" -Wall -Wextra -Werror -O2 ${WQ_EXTRA_CFLAGS:-} \
     -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers -framework JavaScriptCore \
-    WQCore.m WQAccess.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQWebServer.m WQTheme.m WQInspector.m main.m -lsqlite3 -lz -o "$APP/WQFiles"
+    WQCore.m WQAccess.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQPatchReader.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQWebServer.m WQTheme.m WQInspector.m main.m -lsqlite3 -lz -o "$APP/WQFiles"
 cp Info.plist "$APP/Info.plist"
 # App icon with the iOS 18+ dark and tinted variants (issue #47): a catalog
 # built from icons/ and compiled by actool into Assets.car plus the classic
@@ -126,6 +126,11 @@ done
 if compgen -G "$ROOT/themes/*.wqtheme" >/dev/null; then
     mkdir -p "$APP/Themes"
     cp "$ROOT"/themes/*.wqtheme "$APP/Themes/"
+fi
+# Bundled patch packages are read-only resources, not an installed patch library.
+if [[ -d "$ROOT/Preloaded" ]]; then
+    mkdir -p "$APP/Preloaded"
+    cp -R "$ROOT/Preloaded/." "$APP/Preloaded/"
 fi
 plutil -convert binary1 "$APP/Info.plist"
 codesign -f -s - --entitlements entitlements.plist "$APP"
