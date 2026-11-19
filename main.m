@@ -7451,6 +7451,7 @@ static UIViewController *wq_top_view_controller(void);
 
 @interface WQSceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) WQAuthGateViewController *authGate;
 - (void)handleExternalURL:(NSURL *)url;
 @end
 
@@ -7472,13 +7473,20 @@ static UIViewController *wq_top_view_controller(void);
                                                name:WQThemeChangedNotification object:nil];
     if (wq_ios_supported()) {
         WQAuthGateViewController *gate = [WQAuthGateViewController new];
+        self.authGate = gate;
         __weak typeof(self) weakSelf = self;
+        __weak WQAuthGateViewController *weakGate = gate;
         gate.onAuthenticated = ^(NSURL *pendingURL) {
             WQSceneDelegate *strongSelf = weakSelf;
             if (!strongSelf.window) return;
             strongSelf.window.rootViewController = wq_make_root_view_controller();
             [strongSelf applyThemeTint];
             if (pendingURL) dispatch_async(dispatch_get_main_queue(), ^{ [strongSelf handleExternalURL:pendingURL]; });
+        };
+        gate.onAuthenticationExpired = ^{
+            WQSceneDelegate *strongSelf = weakSelf;
+            WQAuthGateViewController *currentGate = weakGate;
+            if (strongSelf.window && currentGate) strongSelf.window.rootViewController = currentGate;
         };
         window.rootViewController = gate;
     } else {
