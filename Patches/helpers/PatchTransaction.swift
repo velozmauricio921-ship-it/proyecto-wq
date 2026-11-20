@@ -2,7 +2,10 @@ import CryptoKit
 import Darwin
 import Foundation
 
-struct PatchTransactionReceipt: Equatable, Identifiable {
+@_silgen_name("WQPatchContainerIdentity")
+private func wqPatchContainerIdentity(_ path: NSString, _ bundleID: NSString) -> NSData?
+
+struct PatchTransactionReceipt: Equatable, Identifiable, Sendable {
     let id: UUID
     let projectID: UUID
     let journalURL: URL
@@ -16,6 +19,10 @@ enum PatchTransaction {
         case restored
     }
 
+    private enum RestoreStatus: String, Codable {
+        case restored
+    }
+
     private struct Record: Codable {
         let ruleID: UUID
         let bundleID: String
@@ -25,12 +32,16 @@ enum PatchTransaction {
         let backupFilename: String?
         let originalDigest: Data?
         let replacementDigest: Data
+        let containerIdentity: Data?
+        var restoreStatus: RestoreStatus?
     }
 
     private struct DirectoryRecord: Codable {
         let bundleID: String
         let relativePath: String
         let containerFingerprint: Data
+        let containerIdentity: Data?
+        var restoreStatus: RestoreStatus?
     }
 
     private struct Journal: Codable {
@@ -39,8 +50,8 @@ enum PatchTransaction {
         let projectID: UUID
         let createdAt: Date
         var status: Status
-        let records: [Record]
-        let createdDirectories: [DirectoryRecord]?
+        var records: [Record]
+        var createdDirectories: [DirectoryRecord]?
     }
 
     private struct ResolvedRule {
@@ -64,6 +75,8 @@ enum PatchTransaction {
         backupRoot: URL,
         containerResolver: (String) throws -> URL,
         beforeWrite: ((Int) throws -> Void)? = nil,
+        beforeDirectoryWrite: ((String, String) throws -> Void)? = nil,
+        beforeRestore: ((String, String, Bool) throws -> Void)? = nil,
         fileManager: FileManager = .default
     ) throws -> PatchTransactionReceipt {
         guard !project.rules.isEmpty || !project.directories.isEmpty else {
@@ -155,13 +168,20 @@ enum PatchTransaction {
             throw PatchPackageError.applyFailed
         }
 
+        var rootIdentities: [String: Data] = [:]
+        for (bundleID, root) in roots {
+            rootIdentities[bundleID] = try containerIdentity(root, bundleID: bundleID)
+        }
+
         var records: [Record] = []
         let createdDirectories = resolvedDirectories.compactMap { resolved -> DirectoryRecord? in
             guard !fileManager.fileExists(atPath: resolved.target.path) else { return nil }
             return DirectoryRecord(
                 bundleID: resolved.bundleID,
                 relativePath: resolved.relativePath,
-                containerFingerprint: containerFingerprint(resolved.containerRoot)
+                containerFingerprint: containerFingerprint(resolved.containerRoot),
+                containerIdentity: rootIdentities[resolved.bundleID],
+                restoreStatus: nil
             )
         }
         do {
@@ -182,7 +202,9 @@ enum PatchTransaction {
                     originalExisted: existed,
                     backupFilename: backupFilename,
                     originalDigest: originalDigest,
-                    replacementDigest: digest(resolved.rule.replacementData)
+                    replacementDigest: digest(resolved.rule.replacementData),
+                    containerIdentity: rootIdentities[resolved.rule.bundleID],
+                    restoreStatus: nil
                 ))
             }
         } catch let error as PatchPackageError {
@@ -209,6 +231,7 @@ enum PatchTransaction {
 
         do {
             for resolved in resolvedDirectories where !fileManager.fileExists(atPath: resolved.target.path) {
+                try beforeDirectoryWrite?(resolved.bundleID, resolved.relativePath)
                 try fileManager.createDirectory(
                     at: resolved.target,
                     withIntermediateDirectories: false
@@ -235,12 +258,15 @@ enum PatchTransaction {
             )
         } catch {
             do {
+                var rollbackRecords = records
+                var rollbackDirectories = createdDirectories
                 try restoreRecords(
-                    records,
+                    &rollbackRecords,
                     transactionDirectory: transactionDirectory,
                     roots: roots,
                     requirePatchedDigest: false,
-                    createdDirectories: createdDirectories,
+                    createdDirectories: &rollbackDirectories,
+                    beforeRestore: beforeRestore,
                     fileManager: fileManager
                 )
                 journal.status = .rolledBack
@@ -255,6 +281,7 @@ enum PatchTransaction {
     static func restore(
         receipt: PatchTransactionReceipt,
         containerResolver: (String) throws -> URL,
+        beforeRestore: ((String, String, Bool) throws -> Void)? = nil,
         fileManager: FileManager = .default
     ) throws {
         var journal: Journal
@@ -266,31 +293,62 @@ enum PatchTransaction {
         guard journal.schemaVersion == schemaVersion,
               journal.transactionID == receipt.id,
               journal.projectID == receipt.projectID,
-              journal.status == .applied || journal.status == .prepared
+              journal.status == .applied || journal.status == .prepared || journal.status == .restored
         else {
             throw PatchPackageError.restoreFailed
         }
 
+        if journal.status == .restored {
+            return
+        }
+
         var roots: [String: URL] = [:]
+        var records = journal.records
+        var createdDirectories = journal.createdDirectories ?? []
         do {
-            for record in journal.records where roots[record.bundleID] == nil {
+            for record in records where roots[record.bundleID] == nil {
                 let root = PatchPathValidator.canonicalFileURL(try containerResolver(record.bundleID))
                 guard containerFingerprint(root) == record.containerFingerprint else {
                     throw PatchPackageError.restoreFailed
                 }
+                if let expectedIdentity = record.containerIdentity {
+                    guard try containerIdentity(root, bundleID: record.bundleID) == expectedIdentity else {
+                        throw PatchPackageError.restoreFailed
+                    }
+                }
                 roots[record.bundleID] = root
             }
+
+            for directory in createdDirectories where roots[directory.bundleID] == nil {
+                let root = PatchPathValidator.canonicalFileURL(try containerResolver(directory.bundleID))
+                guard containerFingerprint(root) == directory.containerFingerprint else {
+                    throw PatchPackageError.restoreFailed
+                }
+                if let expectedIdentity = directory.containerIdentity {
+                    guard try containerIdentity(root, bundleID: directory.bundleID) == expectedIdentity else {
+                        throw PatchPackageError.restoreFailed
+                    }
+                }
+                roots[directory.bundleID] = root
+            }
+
             try restoreRecords(
-                journal.records,
+                &records,
                 transactionDirectory: receipt.journalURL.deletingLastPathComponent(),
                 roots: roots,
-                requirePatchedDigest: journal.status == .applied,
-                createdDirectories: journal.createdDirectories ?? [],
+                requirePatchedDigest: false,
+                createdDirectories: &createdDirectories,
+                beforeRestore: beforeRestore,
                 fileManager: fileManager
             )
+            journal.records = records
+            journal.createdDirectories = createdDirectories
             journal.status = .restored
             try writeJournal(journal, to: receipt.journalURL)
         } catch {
+            journal.records = records
+            journal.createdDirectories = createdDirectories
+            try? writeJournal(journal, to: receipt.journalURL)
             throw PatchPackageError.restoreFailed
         }
     }
@@ -339,37 +397,34 @@ enum PatchTransaction {
     }
 
     private static func restoreRecords(
-        _ records: [Record],
+        _ records: inout [Record],
         transactionDirectory: URL,
         roots: [String: URL],
         requirePatchedDigest: Bool,
-        createdDirectories: [DirectoryRecord],
+        createdDirectories: inout [DirectoryRecord],
+        beforeRestore: ((String, String, Bool) throws -> Void)?,
         fileManager: FileManager
     ) throws {
-        var resolvedTargets: [(Record, URL)] = []
-        for record in records {
+        for index in records.indices {
+            var record = records[index]
             guard let root = roots[record.bundleID],
                   containerFingerprint(root) == record.containerFingerprint else {
                 throw PatchPackageError.restoreFailed
             }
+
             let target = try PatchPathValidator.resolveContainedTargetURL(
                 relativePath: record.relativePath,
                 containerRoot: root
             )
+            try beforeRestore?(record.bundleID, record.relativePath, false)
             try validateFileTarget(
                 target,
                 relativePath: record.relativePath,
                 containerRoot: root,
-                allowMissingParents: !requirePatchedDigest,
+                allowMissingParents: true,
                 fileManager: fileManager
             )
 
-            if requirePatchedDigest {
-                guard fileManager.fileExists(atPath: target.path),
-                      try digestFile(target) == record.replacementDigest else {
-                    throw PatchPackageError.restoreFailed
-                }
-            }
             if record.originalExisted {
                 guard let backupFilename = record.backupFilename,
                       let expectedDigest = record.originalDigest else {
@@ -380,20 +435,40 @@ enum PatchTransaction {
                       try digestFile(backup) == expectedDigest else {
                     throw PatchPackageError.restoreFailed
                 }
-            }
-            resolvedTargets.append((record, target))
-        }
 
-        for (record, target) in resolvedTargets.reversed() {
-            if record.originalExisted {
-                let backup = transactionDirectory.appendingPathComponent(record.backupFilename!)
+                if fileManager.fileExists(atPath: target.path) {
+                    let currentDigest = try digestFile(target)
+                    if currentDigest == expectedDigest {
+                        record.restoreStatus = .restored
+                        records[index] = record
+                        continue
+                    }
+                    guard currentDigest == record.replacementDigest else {
+                        throw PatchPackageError.restoreFailed
+                    }
+                }
+
                 try atomicCopy(backup, to: target, fileManager: fileManager)
-            } else if fileManager.fileExists(atPath: target.path) {
-                try fileManager.removeItem(at: target)
+                guard try digestFile(target) == expectedDigest else {
+                    throw PatchPackageError.restoreFailed
+                }
+            } else {
+                if fileManager.fileExists(atPath: target.path) {
+                    let currentDigest = try digestFile(target)
+                    if currentDigest == record.replacementDigest {
+                        try fileManager.removeItem(at: target)
+                    } else {
+                        throw PatchPackageError.restoreFailed
+                    }
+                }
             }
+
+            record.restoreStatus = .restored
+            records[index] = record
         }
 
-        for directory in createdDirectories.reversed() {
+        for index in createdDirectories.indices.reversed() {
+            var directory = createdDirectories[index]
             guard let root = roots[directory.bundleID],
                   containerFingerprint(root) == directory.containerFingerprint else {
                 throw PatchPackageError.restoreFailed
@@ -402,15 +477,24 @@ enum PatchTransaction {
                 relativePath: directory.relativePath,
                 containerRoot: root
             )
-            guard fileManager.fileExists(atPath: target.path) else { continue }
+            try beforeRestore?(directory.bundleID, directory.relativePath, true)
+
+            guard fileManager.fileExists(atPath: target.path) else {
+                directory.restoreStatus = .restored
+                createdDirectories[index] = directory
+                continue
+            }
             let values = try target.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard values.isSymbolicLink != true, values.isDirectory == true else {
                 throw PatchPackageError.restoreFailed
             }
             let contents = try fileManager.contentsOfDirectory(atPath: target.path)
-            if contents.isEmpty {
-                try fileManager.removeItem(at: target)
+            guard contents.isEmpty else {
+                throw PatchPackageError.restoreFailed
             }
+            try fileManager.removeItem(at: target)
+            directory.restoreStatus = .restored
+            createdDirectories[index] = directory
         }
     }
 
@@ -549,6 +633,21 @@ enum PatchTransaction {
             hasher.update(data: chunk)
         }
         return Data(hasher.finalize())
+    }
+
+    private static func containerIdentity(_ url: URL, bundleID: String) throws -> Data {
+        let canonical = PatchPathValidator.canonicalFileURL(url)
+        if let native = wqPatchContainerIdentity(canonical.path as NSString, bundleID as NSString) {
+            return Data(native)
+        }
+
+        var metadata = stat()
+        guard lstat(canonical.path, &metadata) == 0,
+              (metadata.st_mode & S_IFMT) == S_IFDIR else {
+            throw PatchPackageError.targetAppUnavailable(bundleID)
+        }
+        let payload = "bundleID=\(bundleID);device=\(metadata.st_dev);inode=\(metadata.st_ino);type=\(metadata.st_mode & S_IFMT)"
+        return digest(Data(payload.utf8))
     }
 
     private static func containerFingerprint(_ url: URL) -> Data {
