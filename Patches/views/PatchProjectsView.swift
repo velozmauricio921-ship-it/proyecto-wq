@@ -794,6 +794,44 @@ private struct PatchProjectDetailView: View {
         WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_START")
         Task.detached(priority: .userInitiated) {
             do {
+#if WQ_APPLY_DIAGNOSTIC_SYNC_ONLY
+                WQPatchTrace.log(
+                    operationID,
+                    stage: "DIAG_ROUTE_A_SYNC_START",
+                    result: "project=\(item.id.uuidString);schema=\(item.summary.schemaVersion)"
+                )
+                if item.summary.schemaVersion >= 2 {
+                    let synchronizedProject = try PatchProjectLibrary.synchronizeWorkspace(item: item)
+                    WQPatchTrace.log(
+                        operationID,
+                        stage: "DIAG_ROUTE_A_SYNC_COMPLETE",
+                        result: "project=\(synchronizedProject.id.uuidString)"
+                    )
+                } else {
+                    WQPatchTrace.log(
+                        operationID,
+                        stage: "DIAG_ROUTE_A_SYNC_SKIPPED_SCHEMA_V1",
+                        result: "project=\(baseProject.id.uuidString)"
+                    )
+                }
+                await MainActor.run {
+                    isWorking = false
+                    WQPatchTrace.log(operationID, stage: "DIAG_ROUTE_A_FINISHED", result: "sheet_suppressed")
+                }
+                return
+#elseif WQ_APPLY_DIAGNOSTIC_SKIP_SYNC
+                WQPatchTrace.log(
+                    operationID,
+                    stage: "DIAG_ROUTE_B_SYNC_SKIPPED",
+                    result: "project=\(baseProject.id.uuidString);schema=\(item.summary.schemaVersion)"
+                )
+                let project = baseProject
+                WQPatchTrace.log(
+                    operationID,
+                    stage: "DIAG_ROUTE_B_PROJECT_SELECTED",
+                    result: "source=validated_in_memory;project=\(project.id.uuidString)"
+                )
+#else
                 let requiresWorkspaceSync = item.summary.schemaVersion >= 2
                 WQPatchTrace.log(
                     operationID,
@@ -808,6 +846,7 @@ private struct PatchProjectDetailView: View {
                     stage: "B_AFTER_SYNCHRONIZE",
                     result: "project=\(project.id.uuidString);sync=\(requiresWorkspaceSync ? "completed" : "skipped_schema_v1")"
                 )
+#endif
                 await MainActor.run {
                     isWorking = false
                     WQPatchTrace.log(
@@ -824,6 +863,9 @@ private struct PatchProjectDetailView: View {
                     WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", duration: Date().timeIntervalSince(started))
                 }
             } catch let error as PatchPackageError {
+#if WQ_APPLY_DIAGNOSTIC_SYNC_ONLY
+                WQPatchTrace.log(operationID, stage: "DIAG_ROUTE_A_SYNC_ERROR", result: error.localizationKey)
+#endif
                 await MainActor.run {
                     isWorking = false
                     actionAlert = PatchStoreAlert(
@@ -834,6 +876,9 @@ private struct PatchProjectDetailView: View {
                     WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", result: "error", duration: Date().timeIntervalSince(started))
                 }
             } catch {
+#if WQ_APPLY_DIAGNOSTIC_SYNC_ONLY
+                WQPatchTrace.log(operationID, stage: "DIAG_ROUTE_A_SYNC_ERROR", result: "unexpected_error")
+#endif
                 await MainActor.run {
                     isWorking = false
                     actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.invalid_project")
