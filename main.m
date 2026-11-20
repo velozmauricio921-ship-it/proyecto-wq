@@ -13,6 +13,7 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import "WQAccess.h"
+#import "WQPatchAccessBridge.h"
 #import "WQLaunchServices.h"
 #import "WQUI.h"
 #import "WQScanJournal.h"
@@ -5451,7 +5452,7 @@ static void wq_apply_design(void);
 - (instancetype)init
 {
     if ((self = [super initWithNibName:nil bundle:nil])) {
-        self.title = @"BAIJ STORE MOD";
+        self.title = @"TREM BALA MOD";
     }
     return self;
 }
@@ -7460,6 +7461,8 @@ static UIViewController *wq_top_view_controller(void);
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, strong) WQAuthGateViewController *authGate;
 - (void)handleExternalURL:(NSURL *)url;
+// callbacks
+// replacement
 @end
 
 @implementation WQSceneDelegate
