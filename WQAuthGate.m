@@ -669,7 +669,7 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.title = @"BAIJ STORE MOD";
+    self.title = @"TREM BALA MOD";
     wq_prism_install_background(self);
     self.view.backgroundColor = UIColor.clearColor;
     self.view.tintColor = wq_theme_accent();
@@ -729,7 +729,7 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         [brandTile.centerYAnchor constraintEqualToAnchor:brandRow.centerYAnchor],
     ]];
     UILabel *title = [UILabel new];
-    title.text = @"BAIJ STORE MOD";
+    title.text = @"TREM BALA MOD";
     title.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
     title.adjustsFontForContentSizeCategory = YES;
     title.textAlignment = NSTextAlignmentCenter;
