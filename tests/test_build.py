@@ -107,6 +107,9 @@ exec /usr/bin/unzip "$@"
 
 
 class StagedBuildTests(unittest.TestCase):
+    def setUp(self):
+        BUILD.chmod(BUILD.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
     def _fake_environment(self, directory: Path):
         fake_bin = directory / "bin"
         fake_bin.mkdir()
@@ -240,7 +243,12 @@ class StagedBuildTests(unittest.TestCase):
 
     def test_keyauth_gate_is_compiled_and_pipeline_uses_existing_names(self):
         build = BUILD.read_text(encoding="utf-8")
-        workflow = (ROOT / ".github" / "workflows" / "build-ipa.yml").read_text(encoding="utf-8")
+        workflow_paths = (
+            ROOT / ".github" / "workflows" / "main.yml",
+            ROOT / ".github" / "workflows" / "build-ipa.yml",
+        )
+        workflow_path = next((path for path in workflow_paths if path.is_file()), workflow_paths[-1])
+        workflow = workflow_path.read_text(encoding="utf-8")
         self.assertIn("WQAuthGate.m", build)
         self.assertIn("KEYAUTH_SECRET", workflow)
         self.assertIn("KEYAUTH_OWNER_ID", workflow)

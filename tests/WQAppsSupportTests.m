@@ -104,14 +104,17 @@ static void TestBundleIdentifiers(void)
 {
     WQCheck(WQAppsSupportBundleIDValid(@"com.example.app"));
     WQCheck(WQAppsSupportBundleIDValid(@"com.example-app_1"));
+    WQCheck(WQAppsSupportBundleIDValid(@"pinterest"));
+    WQCheck(WQAppsSupportBundleIDValid(@"ifengNews"));
     WQCheck(!WQAppsSupportBundleIDValid(@""));
-    WQCheck(!WQAppsSupportBundleIDValid(@"nodot"));
     WQCheck(!WQAppsSupportBundleIDValid(@"com/example"));
     WQCheck(!WQAppsSupportBundleIDValid(@"com..example"));
     WQCheck(!WQAppsSupportBundleIDValid(@".com.example"));
     WQCheck(!WQAppsSupportBundleIDValid(@"com.example."));
     WQCheck(!WQAppsSupportBundleIDValid(@"com example.app"));
     WQCheck(!WQAppsSupportBundleIDValid(@"../escape"));
+    WQCheck(!WQAppsSupportBundleIDValid(@"ab"));
+    WQCheck(!WQAppsSupportBundleIDValid(@"..."));
 }
 
 static void TestJournalStates(void)
