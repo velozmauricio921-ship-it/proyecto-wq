@@ -2,17 +2,6 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-@_silgen_name("WQPatchTrace")
-internal func wqPatchTrace(_ operationID: NSString, _ stage: NSString, _ result: NSString, _ durationMilliseconds: Double)
-
-enum WQPatchTrace {
-    static func log(_ operationID: String, stage: String, result: String = "ok", duration: TimeInterval = 0) {
-        #if WQ_APPLY_TRACE
-        wqPatchTrace(operationID as NSString, stage as NSString, result as NSString, duration * 1_000)
-        #endif
-    }
-}
-
 enum PackageRepositoryFeature {
     static let isEnabled = false
 }
@@ -173,8 +162,9 @@ struct FileDocumentPicker: UIViewControllerRepresentable {
     }
 }
 
+@MainActor
 struct WQPatchOperationFlowView: View {
-    enum Mode: Sendable {
+    enum Mode {
         case apply
         case restore(PatchTransactionReceipt)
     }
@@ -194,8 +184,6 @@ struct WQPatchOperationFlowView: View {
     @State private var showConfirmation = false
     @State private var isWorking = false
     @State private var alertMessage: String?
-    @State private var operationTask: Task<Void, Never>?
-    @State private var resolutionTask: Task<Void, Never>?
 
     private var requiredBundleIDs: [String] {
         switch mode {
@@ -332,19 +320,8 @@ struct WQPatchOperationFlowView: View {
             } message: {
                 Text(alertMessage ?? "")
             }
-            .onDisappear {
-                resolutionTask?.cancel()
-                operationTask?.cancel()
-                folders.removeAll()
-            }
-            .onAppear {
-                WQPatchTrace.log(
-                    project.id.uuidString,
-                    stage: "E_OPERATION_FLOW_ON_APPEAR",
-                    result: "project=\(project.id.uuidString)"
-                )
-                resolveAvailableContainers()
-            }
+            .onDisappear { folders.removeAll() }
+            .onAppear { resolveAvailableContainers() }
         }
     }
 
@@ -364,44 +341,17 @@ struct WQPatchOperationFlowView: View {
     }
 
     private func prepareOperations() {
-        let operationProject = project
-        let operationFolders = folders
-        let operationID = UUID().uuidString
-        WQPatchTrace.log(operationID, stage: "PREVIEW_START")
-        isWorking = true
-
-        operationTask = Task.detached(priority: .userInitiated) {
-            let started = Date()
-            do {
-                let operationPreviews = try AuthorizedPatchService.prepare(
-                    project: operationProject,
-                    folders: operationFolders
-                )
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    isWorking = false
-                    previews = operationPreviews
-                    guard !operationPreviews.isEmpty else {
-                        alertMessage = language.text("patch.error.invalid_project")
-                        WQPatchTrace.log(operationID, stage: "PREVIEW_START", result: "empty", duration: Date().timeIntervalSince(started))
-                        return
-                    }
-                    showConfirmation = true
-                    WQPatchTrace.log(operationID, stage: "PREVIEW_START", result: "complete", duration: Date().timeIntervalSince(started))
-                }
-            } catch let error as PatchPackageError {
-                await MainActor.run {
-                    isWorking = false
-                    alertMessage = error.errorDescription ?? language.text(error.localizationKey)
-                    WQPatchTrace.log(operationID, stage: "PREVIEW_START", result: "error", duration: Date().timeIntervalSince(started))
-                }
-            } catch {
-                await MainActor.run {
-                    isWorking = false
-                    alertMessage = language.text("patch.error.invalid_project")
-                    WQPatchTrace.log(operationID, stage: "PREVIEW_START", result: "error", duration: Date().timeIntervalSince(started))
-                }
+        do {
+            previews = try AuthorizedPatchService.prepare(project: project, folders: folders)
+            guard !previews.isEmpty else {
+                alertMessage = language.text("patch.error.invalid_project")
+                return
             }
+            showConfirmation = true
+        } catch let error as PatchPackageError {
+            alertMessage = error.errorDescription ?? language.text(error.localizationKey)
+        } catch {
+            alertMessage = language.text("patch.error.invalid_project")
         }
     }
 
@@ -409,49 +359,24 @@ struct WQPatchOperationFlowView: View {
         isWorking = true
         let confirmedPreviews = previews
         let currentFolders = folders
-        let operationProject = project
         let selectedMode = mode
-        let operationID = UUID().uuidString
-        WQPatchTrace.log(operationID, stage: "AUTH_CHECK", result: "root_gate_active")
-
-        operationTask = Task.detached(priority: .userInitiated) {
-            let started = Date()
-            guard !Task.isCancelled else { return }
+        Task(priority: .userInitiated) {
             do {
-                WQPatchTrace.log(operationID, stage: "TRANSACTION_START")
                 switch selectedMode {
                 case .apply:
-                    WQPatchTrace.log(operationID, stage: "SNAPSHOT_CREATION")
-                    _ = try AuthorizedPatchService.apply(
-                        project: operationProject,
-                        folders: currentFolders,
-                        confirmedPreview: confirmedPreviews
-                    )
+                    _ = try AuthorizedPatchService.apply(project: project, folders: currentFolders, confirmedPreview: confirmedPreviews)
                 case .restore(let receipt):
-                    WQPatchTrace.log(operationID, stage: "SNAPSHOT_CREATION")
-                    try AuthorizedPatchService.restore(
-                        receipt: receipt,
-                        folders: currentFolders
-                    )
+                    try AuthorizedPatchService.restore(receipt: receipt, folders: currentFolders)
                 }
-                await MainActor.run {
-                    isWorking = false
-                    WQPatchTrace.log(operationID, stage: "APPLY_COMPLETE", duration: Date().timeIntervalSince(started))
-                    onComplete()
-                    dismiss()
-                }
+                isWorking = false
+                onComplete()
+                dismiss()
             } catch let error as PatchPackageError {
-                await MainActor.run {
-                    isWorking = false
-                    alertMessage = error.errorDescription ?? language.text(error.localizationKey)
-                    WQPatchTrace.log(operationID, stage: "APPLY_ERROR", result: "patch_error", duration: Date().timeIntervalSince(started))
-                }
+                isWorking = false
+                alertMessage = error.errorDescription ?? language.text(error.localizationKey)
             } catch {
-                await MainActor.run {
-                    isWorking = false
-                    alertMessage = language.text(selectedMode.isRestore ? "patch.error.restore" : "patch.error.apply")
-                    WQPatchTrace.log(operationID, stage: "APPLY_ERROR", result: "unexpected_error", duration: Date().timeIntervalSince(started))
-                }
+                isWorking = false
+                alertMessage = language.text("patch.error.apply")
             }
         }
     }
@@ -461,32 +386,17 @@ struct WQPatchOperationFlowView: View {
         guard !bundleIDs.isEmpty else { return }
         let resolver = resolvePatchContainer
         let authorizer = authorizePatchPath
-        let operationID = UUID().uuidString
-        WQPatchTrace.log(operationID, stage: "CONTAINER_RESOLUTION_START")
-
-        resolutionTask = Task.detached(priority: .utility) {
-            let started = Date()
+        Task(priority: .userInitiated) {
             var resolved: [String: PatchScopedFolder] = [:]
             for bundleID in bundleIDs {
-                guard !Task.isCancelled else { break }
-                WQPatchTrace.log(operationID, stage: "BRIDGE_CALL_START")
-                guard let url = resolver(bundleID) else {
-                    WQPatchTrace.log(operationID, stage: "BRIDGE_CALL_COMPLETE", result: "unresolved")
-                    continue
-                }
-                WQPatchTrace.log(operationID, stage: "BRIDGE_CALL_COMPLETE", result: "resolved")
-                WQPatchTrace.log(operationID, stage: "PATH_AUTHORIZATION", result: authorizer(url.path) ? "authorized" : "denied")
+                guard let url = resolver(bundleID) else { continue }
                 if let folder = try? PatchScopedFolder(deviceURL: url, authorizePath: authorizer) {
                     resolved[bundleID] = folder
                 }
             }
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                for (bundleID, folder) in resolved where folders[bundleID] == nil {
-                    folders[bundleID] = folder
-                    previews = []
-                }
-                WQPatchTrace.log(operationID, stage: "CONTAINER_RESOLUTION_START", result: "complete", duration: Date().timeIntervalSince(started))
+            for (bundleID, folder) in resolved where folders[bundleID] == nil {
+                folders[bundleID] = folder
+                previews = []
             }
         }
     }
