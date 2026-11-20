@@ -729,7 +729,7 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
         [brandTile.centerYAnchor constraintEqualToAnchor:brandRow.centerYAnchor],
     ]];
     UILabel *title = [UILabel new];
-    title.text = @"BAIJ STORE MOD";
+    title.text = @"TREM BALA MOD";
     title.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
     title.adjustsFontForContentSizeCategory = YES;
     title.textAlignment = NSTextAlignmentCenter;
