@@ -60,6 +60,7 @@ EXPECTED_BUNDLE_ID=$(plist_value CFBundleIdentifier Info.plist)
 EXPECTED_VERSION=$(plist_value CFBundleShortVersionString Info.plist)
 EXPECTED_BUILD=$(plist_value CFBundleVersion Info.plist)
 EXPECTED_MINIMUM_OS=$(plist_value MinimumOSVersion Info.plist)
+/usr/bin/plutil -lint entitlements.plist >/dev/null 2>&1 || fail "entitlements.plist is malformed or unreadable"
 APP_GROUP=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' entitlements.plist)
 [[ -n "$APP_GROUP" ]] || fail "entitlements.plist has no App Group"
 # WQ Files' folder (Backups, AppBackups) shows in the Files app only with both
@@ -84,6 +85,13 @@ trap cleanup EXIT
 
 APP="$OUT/Payload/WQFiles.app"
 mkdir -p "$APP"
+SIGNING_ENTITLEMENTS="$OUT/WQFiles.entitlements.plist"
+/usr/bin/plutil -convert xml1 -o "$SIGNING_ENTITLEMENTS" entitlements.plist || \
+    fail "could not normalize entitlements.plist for codesign"
+/usr/bin/plutil -lint "$SIGNING_ENTITLEMENTS" >/dev/null 2>&1 || \
+    fail "normalized signing entitlements are malformed"
+SIGNING_APP_GROUP=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$SIGNING_ENTITLEMENTS")
+[[ "$SIGNING_APP_GROUP" == "$APP_GROUP" ]] || fail "normalized entitlements changed the App Group"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 SWIFT_SOURCES=(
     Patches/helpers/PatchProjectModels.swift
@@ -188,7 +196,7 @@ if [[ -d "$ROOT/Preloaded" ]]; then
     cp -R "$ROOT/Preloaded/." "$APP/Preloaded/"
 fi
 plutil -convert binary1 "$APP/Info.plist"
-codesign -f -s - --entitlements entitlements.plist "$APP"
+codesign -f -s - --entitlements "$SIGNING_ENTITLEMENTS" "$APP"
 
 validate_app() {
     local app_path=$1
