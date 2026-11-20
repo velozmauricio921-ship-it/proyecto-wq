@@ -87,10 +87,13 @@
 "patch.error.symlink" = "Patch targets cannot pass through symbolic links.";
 "patch.error.apply" = "The patch could not be applied. Any earlier writes were rolled back.";
 "patch.error.restore" = "The originals could not be restored safely. No unverified target was overwritten.";
+"patch.error.plan_changed" = "A selected target changed after the preview. Review the updated operations and confirm again.";
+"patch.error.operation_failed" = "The operation failed and was rolled back: %@";
+"patch.error.recovery_required" = "The operation failed and rollback was incomplete. Recovery journal: %@";
 "patch.error.invalid_import_link" = "This patch import link is invalid. Use a secure HTTPS link to a .3105 package.";
 "patch.error.remote_import" = "The patch could not be downloaded securely. Check the link and try again.";
 "patch.authorized_locations" = "Authorized Locations";
-"patch.authorized_locations_footer" = "Choose a folder for each target. Installed app containers and application bundles are not accepted.";
+"patch.authorized_locations_footer" = "Choose a folder for each target. App containers, shared app groups, system groups, and application bundles are not accepted.";
 "patch.choose_folder" = "Choose Folder";
 "patch.source_folder" = "Source Folder";
 "patch.create_from_folder" = "Create from Folder";
