@@ -54,8 +54,26 @@ jobs:
           ls -la
           ls -la "${{ github.workspace }}"
           if test -f "$GITHUB_WORKSPACE/build.log"; then
-            tail -n 200 "$GITHUB_WORKSPACE/build.log"
+            echo "--- First build errors ---"
+            grep -nEi "(^|[^a-z])(error|failed|failure|unable|missing|cannot|not found)([^a-z]|$)" "$GITHUB_WORKSPACE/build.log" | head -n 80
+            echo "--- First 300 lines of build.log ---"
+            head -n 300 "$GITHUB_WORKSPACE/build.log"
+            echo "--- Last 300 lines of build.log ---"
+            tail -n 300 "$GITHUB_WORKSPACE/build.log"
+          else
+            echo "build.log was not created"
           fi
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics
+          path: |
+            ${{ github.workspace }}/build.log
+            ${{ github.workspace }}/TREM-BALA-MOD.ipa
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload IPA artifact
         if: success()
