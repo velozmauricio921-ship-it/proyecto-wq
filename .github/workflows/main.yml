@@ -31,10 +31,17 @@ jobs:
           KEYAUTH_OWNER_ID: ${{ secrets.KEYAUTH_OWNER_ID || vars.KEYAUTH_OWNER_ID }}
           KEYAUTH_APP_NAME: ${{ secrets.KEYAUTH_APP_NAME || vars.KEYAUTH_APP_NAME }}
 
+      - name: Verify IPA output
+        run: |
+          set -e
+          ls -la "${{ github.workspace }}"
+          test -f "${{ github.workspace }}/TREM-BALA-MOD.ipa"
+          ls -lh "${{ github.workspace }}/TREM-BALA-MOD.ipa"
+
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: TREM-BALA-MOD-ipa
-          path: TREM-BALA-MOD.ipa
+          path: ${{ github.workspace }}/TREM-BALA-MOD.ipa
           if-no-files-found: error
           retention-days: 14
