@@ -21,9 +21,14 @@ jobs:
         run: xcodebuild -version
 
       - name: Run tests and build IPA
+        shell: bash
         run: |
+          set -euo pipefail
           chmod +x build.sh tests/run_localization_tests.sh
-          bash ./build.sh
+          bash -n build.sh
+          echo "Starting IPA build in: $PWD"
+          bash ./build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          echo "IPA build step completed"
         env:
           WQ_SKIP_PREFLIGHT: "1"
           WQFILES_FINAL_IPA: ${{ github.workspace }}/TREM-BALA-MOD.ipa
@@ -32,13 +37,28 @@ jobs:
           KEYAUTH_APP_NAME: ${{ secrets.KEYAUTH_APP_NAME || vars.KEYAUTH_APP_NAME }}
 
       - name: Verify IPA output
+        if: success()
         run: |
-          set -e
+          set -euo pipefail
           ls -la "${{ github.workspace }}"
           test -f "${{ github.workspace }}/TREM-BALA-MOD.ipa"
           ls -lh "${{ github.workspace }}/TREM-BALA-MOD.ipa"
 
+      - name: Diagnostic output on build failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          echo "Build or verification failed. Dumping safe diagnostics:"
+          pwd
+          ls -la
+          ls -la "${{ github.workspace }}"
+          if test -f "$GITHUB_WORKSPACE/build.log"; then
+            tail -n 200 "$GITHUB_WORKSPACE/build.log"
+          fi
+
       - name: Upload IPA artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: TREM-BALA-MOD-ipa
