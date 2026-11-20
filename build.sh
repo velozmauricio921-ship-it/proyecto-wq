@@ -9,10 +9,6 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 cd "$ROOT"
 MINIMUM_IOS_VERSION=26.0
 FINAL_IPA=${WQFILES_FINAL_IPA:-WQFiles.ipa}
-TRACE_SWIFT_FLAGS=()
-if [[ "${WQ_APPLY_TRACE:-0}" == 1 ]]; then
-    TRACE_SWIFT_FLAGS=(-D WQ_APPLY_TRACE)
-fi
 
 # Publish only after the host regression suite passes. The packaged artifact
 # still needs device validation, but this prevents a known-broken source tree
@@ -95,30 +91,19 @@ SWIFT_SOURCES=(
     Patches/helpers/PatchProjectStore.swift
     Patches/helpers/PatchDraftService.swift
     Patches/helpers/PatchDraftCoordinator.swift
-    Patches/helpers/PatchTransaction.swift
-    Patches/helpers/PatchFileAccessAdapter.swift
-    Patches/helpers/AuthorizedPatchService.swift
     Patches/views/PatchProjectsView.swift
     Patches/views/PatchProjectEditorView.swift
     Patches/views/FolderPatchSelectionView.swift
     Patches/WQPatchIntegrationSupport.swift
 )
-if (( ${#TRACE_SWIFT_FLAGS[@]} > 0 )); then
-    xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
-        -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
-        -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
-        -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
-        ${WQ_EXTRA_SWIFT_FLAGS:-} "${TRACE_SWIFT_FLAGS[@]}" "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
-else
-    xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
-        -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
-        -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
-        -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
-        ${WQ_EXTRA_SWIFT_FLAGS:-} "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
-fi
+xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
+    -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
+    -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
+    -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
+    ${WQ_EXTRA_SWIFT_FLAGS:-} "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
 
 OBJC_SOURCES=(
-    WQCore.m WQAccess.m WQPatchAccessBridge.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m
+    WQCore.m WQAccess.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m
     WQApps.m WQCache.m WQPlistEditor.m WQAuthGate.m WQPatchReader.m WQHexViewer.m
     WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m
     WQMediaStream.m WQWebServer.m WQTheme.m WQInspector.m main.m

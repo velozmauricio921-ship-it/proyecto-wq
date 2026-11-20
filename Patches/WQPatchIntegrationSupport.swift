@@ -1,17 +1,7 @@
+import Darwin
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
-
-@_silgen_name("WQPatchTrace")
-internal func wqPatchTrace(_ operationID: NSString, _ stage: NSString, _ result: NSString, _ durationMilliseconds: Double)
-
-enum WQPatchTrace {
-    static func log(_ operationID: String, stage: String, result: String = "ok", duration: TimeInterval = 0) {
-        #if WQ_APPLY_TRACE
-        wqPatchTrace(operationID as NSString, stage as NSString, result as NSString, duration * 1_000)
-        #endif
-    }
-}
 
 enum PackageRepositoryFeature {
     static let isEnabled = false
@@ -77,14 +67,6 @@ private struct PatchModuleCloserKey: EnvironmentKey {
     static let defaultValue: () -> Void = {}
 }
 
-private struct PatchContainerResolverKey: EnvironmentKey {
-    static let defaultValue: (String) -> URL? = { _ in nil }
-}
-
-private struct PatchPathAuthorizerKey: EnvironmentKey {
-    static let defaultValue: (String) -> Bool = { _ in false }
-}
-
 extension EnvironmentValues {
     var openPatchWorkspace: (String, String) -> Void {
         get { self[PatchWorkspaceOpenerKey.self] }
@@ -96,15 +78,6 @@ extension EnvironmentValues {
         set { self[PatchModuleCloserKey.self] = newValue }
     }
 
-    var resolvePatchContainer: (String) -> URL? {
-        get { self[PatchContainerResolverKey.self] }
-        set { self[PatchContainerResolverKey.self] = newValue }
-    }
-
-    var authorizePatchPath: (String) -> Bool {
-        get { self[PatchPathAuthorizerKey.self] }
-        set { self[PatchPathAuthorizerKey.self] = newValue }
-    }
 }
 
 enum AudioFeedback {
@@ -173,322 +146,55 @@ struct FileDocumentPicker: UIViewControllerRepresentable {
     }
 }
 
-struct WQPatchOperationFlowView: View {
-    enum Mode: Sendable {
-        case apply
-        case restore(PatchTransactionReceipt)
-    }
+final class PatchSourceFolder {
+    let url: URL
+    private let scopedURL: URL
 
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.appLanguage) private var language
-    @Environment(\.resolvePatchContainer) private var resolvePatchContainer
-    @Environment(\.authorizePatchPath) private var authorizePatchPath
-    let project: PatchProject
-    let mode: Mode
-    let onComplete: () -> Void
-
-    @State private var folders: [String: PatchScopedFolder] = [:]
-    @State private var selectingBundleID: String?
-    @State private var showFolderPicker = false
-    @State private var previews: [PatchOperationPreview] = []
-    @State private var showConfirmation = false
-    @State private var isWorking = false
-    @State private var alertMessage: String?
-    @State private var operationTask: Task<Void, Never>?
-    @State private var resolutionTask: Task<Void, Never>?
-
-    private var requiredBundleIDs: [String] {
-        switch mode {
-        case .apply:
-            return project.allBundleIdentifiers
-        case .restore(let receipt):
-            return (try? PatchTransaction.requiredBundleIdentifiers(for: receipt)) ?? []
+    init(url: URL) throws {
+        guard url.isFileURL, url.startAccessingSecurityScopedResource() else {
+            throw PatchPackageError.unsafeTargetPath
         }
-    }
-
-    private var allFoldersSelected: Bool {
-        !requiredBundleIDs.isEmpty && Set(requiredBundleIDs) == Set(folders.keys)
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    ForEach(requiredBundleIDs, id: \.self) { bundleID in
-                        Button {
-                            selectingBundleID = bundleID
-                            showFolderPicker = true
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: folders[bundleID] == nil ? "folder.badge.plus" : "folder.fill")
-                                    .foregroundStyle(AppTheme.accent)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(bundleID).font(.subheadline.monospaced())
-                                    Text(folders[bundleID]?.url.path ?? language.text("patch.choose_folder"))
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isWorking)
-                    }
-                } header: {
-                    Text(language.text("patch.authorized_locations"))
-                } footer: {
-                    Text(language.text("patch.authorized_locations_footer"))
-                }
-
-                if case .apply = mode, !previews.isEmpty {
-                    Section {
-                        ForEach(previews) { operation in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(operation.action.localizedTitle(using: language))
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(operation.action.isDestructive ? .orange : AppTheme.accent)
-                                    Spacer()
-                                    if operation.action == .replaceFile {
-                                        Text(ByteCountFormatter.string(
-                                            fromByteCount: operation.existingBytes ?? 0,
-                                            countStyle: .file
-                                        ))
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-                                    }
-                                }
-                                Text(operation.bundleID).font(.caption2.monospaced())
-                                    .foregroundStyle(.secondary)
-                                Text(operation.relativePath).font(.caption.monospaced())
-                                    .textSelection(.enabled)
-                                if operation.action == .createFile || operation.action == .replaceFile {
-                                    Text(language.text("patch.replacement_size", Int64(operation.replacementBytes)))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .padding(.vertical, 3)
-                        }
-                    } header: {
-                        Text(language.text("patch.operation_preview", Int64(previews.count)))
-                    }
-                }
-
-                if isWorking {
-                    Section {
-                        HStack(spacing: 10) {
-                            ProgressView()
-                            Text(language.text("patch.applying"))
-                        }
-                    }
-                }
-            }
-            .navigationTitle(language.text(mode.isRestore ? "patch.restore" : "patch.apply"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(language.text("common.cancel")) { dismiss() }
-                        .disabled(isWorking)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(language.text(mode.isRestore ? "patch.restore" : "patch.review")) {
-                        if mode.isRestore {
-                            showConfirmation = true
-                        } else {
-                            prepareOperations()
-                        }
-                    }
-                    .disabled(!allFoldersSelected || isWorking || (mode.isRestore == false && !previews.isEmpty))
-                }
-            }
-            .fileImporter(
-                isPresented: $showFolderPicker,
-                allowedContentTypes: [.folder],
-                allowsMultipleSelection: false,
-                onCompletion: handleFolderSelection
-            )
-            .confirmationDialog(
-                language.text(mode.isRestore ? "patch.restore_confirm_title" : "patch.apply_confirm_title"),
-                isPresented: $showConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button(language.text(mode.isRestore ? "patch.restore" : "patch.apply"), role: mode.isRestore ? .destructive : nil) {
-                    executeOperation()
-                }
-                Button(language.text("common.cancel"), role: .cancel) {}
-            } message: {
-                Text(language.text(mode.isRestore ? "patch.restore_confirm_message" : "patch.apply_confirm_message"))
-            }
-            .alert(language.text("common.failed"), isPresented: Binding(
-                get: { alertMessage != nil },
-                set: { if !$0 { alertMessage = nil } }
-            )) {
-                Button(language.text("common.ok"), role: .cancel) { alertMessage = nil }
-            } message: {
-                Text(alertMessage ?? "")
-            }
-            .onDisappear {
-                resolutionTask?.cancel()
-                operationTask?.cancel()
-                folders.removeAll()
-            }
-            .onAppear {
-                WQPatchTrace.log(
-                    project.id.uuidString,
-                    stage: "E_OPERATION_FLOW_ON_APPEAR",
-                    result: "project=\(project.id.uuidString)"
-                )
-                resolveAvailableContainers()
-            }
-        }
-    }
-
-    private func handleFolderSelection(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result,
-              let url = urls.first,
-              let bundleID = selectingBundleID else { return }
+        scopedURL = url
+        self.url = PatchPathValidator.canonicalFileURL(url)
         do {
-            folders[bundleID] = try PatchScopedFolder(url: url)
-            previews = []
-        } catch let error as PatchPackageError {
-            alertMessage = error.errorDescription ?? language.text(error.localizationKey)
+            try validate()
         } catch {
-            alertMessage = language.text("patch.error.unsafe_path")
-        }
-        selectingBundleID = nil
-    }
-
-    private func prepareOperations() {
-        let operationProject = project
-        let operationFolders = folders
-        let operationID = UUID().uuidString
-        WQPatchTrace.log(operationID, stage: "PREVIEW_START")
-        isWorking = true
-
-        operationTask = Task.detached(priority: .userInitiated) {
-            let started = Date()
-            do {
-                let operationPreviews = try AuthorizedPatchService.prepare(
-                    project: operationProject,
-                    folders: operationFolders
-                )
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    isWorking = false
-                    previews = operationPreviews
-                    guard !operationPreviews.isEmpty else {
-                        alertMessage = language.text("patch.error.invalid_project")
-                        WQPatchTrace.log(operationID, stage: "PREVIEW_START", result: "empty", duration: Date().timeIntervalSince(started))
-                        return
-                    }
-                    showConfirmation = true
-                    WQPatchTrace.log(operationID, stage: "PREVIEW_START", result: "complete", duration: Date().timeIntervalSince(started))
-                }
-            } catch let error as PatchPackageError {
-                await MainActor.run {
-                    isWorking = false
-                    alertMessage = error.errorDescription ?? language.text(error.localizationKey)
-                    WQPatchTrace.log(operationID, stage: "PREVIEW_START", result: "error", duration: Date().timeIntervalSince(started))
-                }
-            } catch {
-                await MainActor.run {
-                    isWorking = false
-                    alertMessage = language.text("patch.error.invalid_project")
-                    WQPatchTrace.log(operationID, stage: "PREVIEW_START", result: "error", duration: Date().timeIntervalSince(started))
-                }
-            }
+            url.stopAccessingSecurityScopedResource()
+            throw error
         }
     }
 
-    private func executeOperation() {
-        isWorking = true
-        let confirmedPreviews = previews
-        let currentFolders = folders
-        let operationProject = project
-        let selectedMode = mode
-        let operationID = UUID().uuidString
-        WQPatchTrace.log(operationID, stage: "AUTH_CHECK", result: "root_gate_active")
+    deinit {
+        scopedURL.stopAccessingSecurityScopedResource()
+    }
 
-        operationTask = Task.detached(priority: .userInitiated) {
-            let started = Date()
-            guard !Task.isCancelled else { return }
-            do {
-                WQPatchTrace.log(operationID, stage: "TRANSACTION_START")
-                switch selectedMode {
-                case .apply:
-                    WQPatchTrace.log(operationID, stage: "SNAPSHOT_CREATION")
-                    _ = try AuthorizedPatchService.apply(
-                        project: operationProject,
-                        folders: currentFolders,
-                        confirmedPreview: confirmedPreviews
-                    )
-                case .restore(let receipt):
-                    WQPatchTrace.log(operationID, stage: "SNAPSHOT_CREATION")
-                    try AuthorizedPatchService.restore(
-                        receipt: receipt,
-                        folders: currentFolders
-                    )
-                }
-                await MainActor.run {
-                    isWorking = false
-                    WQPatchTrace.log(operationID, stage: "APPLY_COMPLETE", duration: Date().timeIntervalSince(started))
-                    onComplete()
-                    dismiss()
-                }
-            } catch let error as PatchPackageError {
-                await MainActor.run {
-                    isWorking = false
-                    alertMessage = error.errorDescription ?? language.text(error.localizationKey)
-                    WQPatchTrace.log(operationID, stage: "APPLY_ERROR", result: "patch_error", duration: Date().timeIntervalSince(started))
-                }
-            } catch {
-                await MainActor.run {
-                    isWorking = false
-                    alertMessage = language.text(selectedMode.isRestore ? "patch.error.restore" : "patch.error.apply")
-                    WQPatchTrace.log(operationID, stage: "APPLY_ERROR", result: "unexpected_error", duration: Date().timeIntervalSince(started))
-                }
-            }
+    private func validate() throws {
+        let protectedRoots = [
+            "/private/var/mobile/Containers/Data/Application",
+            "/var/mobile/Containers/Data/Application",
+            "/private/var/containers/Bundle/Application",
+            "/var/containers/Bundle/Application",
+            "/Applications",
+            "/System/Applications"
+        ]
+        let path = url.path
+        guard !protectedRoots.contains(where: { path == $0 || path.hasPrefix($0 + "/") }),
+              Self.pathHasNoSymbolicLinks(path) else {
+            throw PatchPackageError.unsafeTargetPath
         }
     }
 
-    private func resolveAvailableContainers() {
-        let bundleIDs = requiredBundleIDs.filter { folders[$0] == nil }
-        guard !bundleIDs.isEmpty else { return }
-        let resolver = resolvePatchContainer
-        let authorizer = authorizePatchPath
-        let operationID = UUID().uuidString
-        WQPatchTrace.log(operationID, stage: "CONTAINER_RESOLUTION_START")
-
-        resolutionTask = Task.detached(priority: .utility) {
-            let started = Date()
-            var resolved: [String: PatchScopedFolder] = [:]
-            for bundleID in bundleIDs {
-                guard !Task.isCancelled else { break }
-                WQPatchTrace.log(operationID, stage: "BRIDGE_CALL_START")
-                guard let url = resolver(bundleID) else {
-                    WQPatchTrace.log(operationID, stage: "BRIDGE_CALL_COMPLETE", result: "unresolved")
-                    continue
-                }
-                WQPatchTrace.log(operationID, stage: "BRIDGE_CALL_COMPLETE", result: "resolved")
-                WQPatchTrace.log(operationID, stage: "PATH_AUTHORIZATION", result: authorizer(url.path) ? "authorized" : "denied")
-                if let folder = try? PatchScopedFolder(deviceURL: url, authorizePath: authorizer) {
-                    resolved[bundleID] = folder
-                }
-            }
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                for (bundleID, folder) in resolved where folders[bundleID] == nil {
-                    folders[bundleID] = folder
-                    previews = []
-                }
-                WQPatchTrace.log(operationID, stage: "CONTAINER_RESOLUTION_START", result: "complete", duration: Date().timeIntervalSince(started))
-            }
+    private static func pathHasNoSymbolicLinks(_ path: String) -> Bool {
+        let components = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        guard components.first == "/" else { return false }
+        var current = URL(fileURLWithPath: "/", isDirectory: true)
+        for component in components.dropFirst() {
+            current.appendPathComponent(component, isDirectory: true)
+            var metadata = stat()
+            guard lstat(current.path, &metadata) == 0,
+                  (metadata.st_mode & S_IFMT) == S_IFDIR else { return false }
         }
+        return true
     }
 }
 
@@ -500,7 +206,7 @@ struct WQPatchFolderCaptureView: View {
     @State private var showFolderPicker = false
     @State private var showFileSelection = false
     @State private var showEditor = false
-    @State private var selectedFolder: PatchScopedFolder?
+    @State private var selectedFolder: PatchSourceFolder?
     @State private var draft: PatchProjectDraft?
     @State private var errorMessage: String?
     @State private var bundleID = "com.wqfiles.userselected"
@@ -602,7 +308,7 @@ struct WQPatchFolderCaptureView: View {
     private func handleFolderSelection(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
         do {
-            selectedFolder = try PatchScopedFolder(url: url)
+            selectedFolder = try PatchSourceFolder(url: url)
             errorMessage = nil
         } catch let error as PatchPackageError {
             errorMessage = error.errorDescription ?? language.text(error.localizationKey)
@@ -612,35 +318,9 @@ struct WQPatchFolderCaptureView: View {
     }
 }
 
-private extension WQPatchOperationFlowView.Mode {
-    var isRestore: Bool {
-        if case .restore = self { return true }
-        return false
-    }
-}
-
-private extension PatchOperationPreview.Action {
-    var isDestructive: Bool { self == .replaceFile }
-
-    func localizedTitle(using language: AppLanguage) -> String {
-        switch self {
-        case .createDirectory: return language.text("patch.create_directory")
-        case .keepDirectory: return language.text("patch.keep_directory")
-        case .createFile: return language.text("patch.create_file")
-        case .replaceFile: return language.text("patch.replace_file")
-        }
-    }
-}
-
 @objc(WQPatchHostViewController)
 public final class WQPatchHostViewController: UIViewController {
     @objc public var openWorkspaceHandler: ((String, String) -> Void)?
-    @objc public var resolveApplicationContainerHandler: ((String) -> String?)? = { bundleID in
-        wqPatchResolveApplicationContainer(bundleID as NSString) as String?
-    }
-    @objc public var authorizePatchPathHandler: ((String) -> Bool)? = { path in
-        wqPatchAuthorizePath(path as NSString)
-    }
 
     private let draftCoordinator = PatchDraftCoordinator()
     private var hostingController: UIHostingController<AnyView>?
@@ -682,13 +362,6 @@ public final class WQPatchHostViewController: UIViewController {
                 .environment(\.closePatchModule) { [weak self] in
                     self?.navigationController?.popViewController(animated: true)
                 }
-                .environment(\.resolvePatchContainer) { [weak self] bundleID in
-                    guard let path = self?.resolveApplicationContainerHandler?(bundleID) else { return nil }
-                    return URL(fileURLWithPath: path, isDirectory: true)
-                }
-                .environment(\.authorizePatchPath) { [weak self] path in
-                    self?.authorizePatchPathHandler?(path) ?? false
-                }
         )
         let host = UIHostingController(rootView: rootView)
         addChild(host)
@@ -705,8 +378,3 @@ public final class WQPatchHostViewController: UIViewController {
     }
 }
 
-@_silgen_name("WQPatchResolveApplicationContainer")
-private func wqPatchResolveApplicationContainer(_ bundleID: NSString) -> NSString?
-
-@_silgen_name("WQPatchAuthorizePath")
-private func wqPatchAuthorizePath(_ path: NSString) -> Bool

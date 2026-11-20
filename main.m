@@ -13,7 +13,6 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import "WQAccess.h"
-#import "WQPatchAccessBridge.h"
 #import "WQLaunchServices.h"
 #import "WQUI.h"
 #import "WQScanJournal.h"

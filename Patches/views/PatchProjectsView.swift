@@ -18,10 +18,7 @@ struct PatchProjectsView: View {
     @State private var showFolderCapture = false
     @State private var searchText = ""
     @State private var selectedID: UUID?
-    @State private var isWorkingAction = false
-    @State private var receiptRefresh = UUID()
     @State private var actionAlert: PatchStoreAlert?
-    @State private var restoreFailureCounts: [UUID: Int] = [:]
     @State private var selectedGroup: String? = nil
     @State private var selectedSubgroup: String? = nil
 
@@ -69,15 +66,6 @@ struct PatchProjectsView: View {
             return cats[1]
         })
         return Array(subs).sorted()
-    }
-
-    private func refreshSelectionState() {
-        guard let selected = selectedID,
-              let item = store.items.first(where: { $0.id == selected }) else {
-            selectedID = nil
-            return
-        }
-        _ = AuthorizedPatchService.latestReceipt(projectID: item.id)
     }
 
     init() {
@@ -203,7 +191,6 @@ struct PatchProjectsView: View {
                                         selectedID = nil
                                     } else {
                                         selectedID = item.id
-                                        refreshSelectionState()
                                     }
                                 }) {
                                     PatchProjectRow(item: item, language: language)
@@ -234,7 +221,6 @@ struct PatchProjectsView: View {
             }
             // Bottom action bar for selected feature (inside NavigationStack content)
             if let sel = selectedID, let selectedItem = store.items.first(where: { $0.id == sel }) {
-                let selectedHasReceipt = AuthorizedPatchService.latestReceipt(projectID: selectedItem.id) != nil
                 VStack(spacing: 0) {
                     Divider()
                     HStack(alignment: .center, spacing: 12) {
@@ -244,19 +230,11 @@ struct PatchProjectsView: View {
                                 .font(.system(size: 15, weight: .bold, design: .rounded))
                                 .foregroundStyle(.white)
                                 .lineLimit(1)
-
-                            Text(selectedHasReceipt ? "ACTIVE" : "INACTIVE")
-                                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                                .foregroundStyle(selectedHasReceipt ? AppTheme.accent : .white.opacity(0.7))
-                                .textCase(.uppercase)
                         }
 
                         Spacer()
 
-                        if isWorkingAction {
-                            ProgressView()
-                                .tint(AppTheme.accent)
-                        } else if selectedItem.isLocked {
+                        if selectedItem.isLocked {
                             Button {
                                 Task.detached(priority: .userInitiated) {
                                     await MainActor.run { store.requestUnlock(for: selectedItem) }
@@ -282,7 +260,6 @@ struct PatchProjectsView: View {
                                     .background(Capsule().fill(AppTheme.accent.opacity(0.16)))
                                     .foregroundStyle(AppTheme.accent)
                             }
-                            .disabled(isWorkingAction)
                         }
                     }
                     .padding(.horizontal, AppTheme.pageInset)
@@ -298,7 +275,6 @@ struct PatchProjectsView: View {
                     .padding(.horizontal, 14)
                     .padding(.bottom, 10)
                 }
-                .id(receiptRefresh)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         } // NavigationStack end
@@ -615,18 +591,11 @@ private struct PatchProjectDetailView: View {
     let projectID: UUID
     @State private var showEditor = false
     @State private var editingRule: PatchRule?
-    @State private var authorizedApplyProject: PatchProject?
-    @State private var restoreReceipt: PatchTransactionReceipt?
-    @State private var isWorking = false
     @State private var actionAlert: PatchStoreAlert?
     
 
     private var item: PatchLibraryItem? {
         store.items.first(where: { $0.id == projectID })
-    }
-
-    private var receipt: PatchTransactionReceipt? {
-        AuthorizedPatchService.latestReceipt(projectID: projectID)
     }
 
     private var isWorkspaceProject: Bool {
@@ -706,27 +675,6 @@ private struct PatchProjectDetailView: View {
                     }
                 }
 
-                Section {
-                    Button {
-                        beginAuthorizedApply()
-                    } label: {
-                        actionLabel("patch.apply", systemImage: "checkmark.shield.fill")
-                    }
-                    .disabled(isWorking)
-
-                    if receipt != nil {
-                        Button {
-                            restoreReceipt = receipt
-                        } label: {
-                            actionLabel("patch.restore", systemImage: "arrow.uturn.backward.circle")
-                        }
-                        .disabled(isWorking)
-                    }
-
-                    // Export disabled to avoid leaking .3105 files
-                } footer: {
-                    Text(language.text("patch.apply_footer"))
-                }
             }
         }
         .listStyle(.insetGrouped)
@@ -734,9 +682,7 @@ private struct PatchProjectDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                if isWorking {
-                    ProgressView()
-                } else if !isWorkspaceProject {
+                if !isWorkspaceProject {
                     Button(language.text("patch.edit")) { showEditor = true }
                         .disabled(item?.project == nil)
                 }
@@ -757,18 +703,6 @@ private struct PatchProjectDetailView: View {
                 updateRule(updatedRule)
             }
         }
-        .sheet(item: $authorizedApplyProject) { project in
-            WQPatchOperationFlowView(project: project, mode: .apply) {
-                store.reload()
-            }
-        }
-        .sheet(item: $restoreReceipt) { receipt in
-            if let item, let project = item.project {
-                WQPatchOperationFlowView(project: project, mode: .restore(receipt)) {
-                    store.reload()
-                }
-            }
-        }
         .alert(item: $actionAlert) { alert in
             Alert(
                 title: Text(language.text(alert.titleKey)),
@@ -777,115 +711,6 @@ private struct PatchProjectDetailView: View {
             )
         }
         
-    }
-
-    private func actionLabel(_ key: String, systemImage: String) -> some View {
-        Label(language.text(key), systemImage: systemImage)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func beginAuthorizedApply() {
-        guard let item, let baseProject = item.project else { return }
-        let operationID = UUID().uuidString
-        let started = Date()
-        WQPatchTrace.log(operationID, stage: "APPLY_BUTTON_PRESSED")
-        WQPatchTrace.log(operationID, stage: "AUTH_CHECK", result: "root_gate_active")
-        isWorking = true
-        WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_START")
-        Task.detached(priority: .userInitiated) {
-            do {
-#if WQ_APPLY_DIAGNOSTIC_SYNC_ONLY
-                WQPatchTrace.log(
-                    operationID,
-                    stage: "DIAG_ROUTE_A_SYNC_START",
-                    result: "project=\(item.id.uuidString);schema=\(item.summary.schemaVersion)"
-                )
-                if item.summary.schemaVersion >= 2 {
-                    let synchronizedProject = try PatchProjectLibrary.synchronizeWorkspace(item: item)
-                    WQPatchTrace.log(
-                        operationID,
-                        stage: "DIAG_ROUTE_A_SYNC_COMPLETE",
-                        result: "project=\(synchronizedProject.id.uuidString)"
-                    )
-                } else {
-                    WQPatchTrace.log(
-                        operationID,
-                        stage: "DIAG_ROUTE_A_SYNC_SKIPPED_SCHEMA_V1",
-                        result: "project=\(baseProject.id.uuidString)"
-                    )
-                }
-                await MainActor.run {
-                    isWorking = false
-                    WQPatchTrace.log(operationID, stage: "DIAG_ROUTE_A_FINISHED", result: "sheet_suppressed")
-                }
-                return
-#elseif WQ_APPLY_DIAGNOSTIC_SKIP_SYNC
-                WQPatchTrace.log(
-                    operationID,
-                    stage: "DIAG_ROUTE_B_SYNC_SKIPPED",
-                    result: "project=\(baseProject.id.uuidString);schema=\(item.summary.schemaVersion)"
-                )
-                let project = baseProject
-                WQPatchTrace.log(
-                    operationID,
-                    stage: "DIAG_ROUTE_B_PROJECT_SELECTED",
-                    result: "source=validated_in_memory;project=\(project.id.uuidString)"
-                )
-#else
-                let requiresWorkspaceSync = item.summary.schemaVersion >= 2
-                WQPatchTrace.log(
-                    operationID,
-                    stage: "A_BEFORE_SYNCHRONIZE",
-                    result: "project=\(item.id.uuidString);schema=\(item.summary.schemaVersion);sync=\(requiresWorkspaceSync)"
-                )
-                let project = requiresWorkspaceSync
-                    ? try PatchProjectLibrary.synchronizeWorkspace(item: item)
-                    : baseProject
-                WQPatchTrace.log(
-                    operationID,
-                    stage: "B_AFTER_SYNCHRONIZE",
-                    result: "project=\(project.id.uuidString);sync=\(requiresWorkspaceSync ? "completed" : "skipped_schema_v1")"
-                )
-#endif
-                await MainActor.run {
-                    isWorking = false
-                    WQPatchTrace.log(
-                        operationID,
-                        stage: "C_BEFORE_AUTHORIZED_PROJECT_ASSIGNMENT",
-                        result: "project=\(project.id.uuidString)"
-                    )
-                    authorizedApplyProject = project
-                    WQPatchTrace.log(
-                        operationID,
-                        stage: "D_AFTER_AUTHORIZED_PROJECT_ASSIGNMENT",
-                        result: "project=\(project.id.uuidString)"
-                    )
-                    WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", duration: Date().timeIntervalSince(started))
-                }
-            } catch let error as PatchPackageError {
-#if WQ_APPLY_DIAGNOSTIC_SYNC_ONLY
-                WQPatchTrace.log(operationID, stage: "DIAG_ROUTE_A_SYNC_ERROR", result: error.localizationKey)
-#endif
-                await MainActor.run {
-                    isWorking = false
-                    actionAlert = PatchStoreAlert(
-                        titleKey: "common.failed",
-                        messageKey: error.localizationKey,
-                        messageArgument: error.localizationArgument
-                    )
-                    WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", result: "error", duration: Date().timeIntervalSince(started))
-                }
-            } catch {
-#if WQ_APPLY_DIAGNOSTIC_SYNC_ONLY
-                WQPatchTrace.log(operationID, stage: "DIAG_ROUTE_A_SYNC_ERROR", result: "unexpected_error")
-#endif
-                await MainActor.run {
-                    isWorking = false
-                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.invalid_project")
-                    WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", result: "error", duration: Date().timeIntervalSince(started))
-                }
-            }
-        }
     }
 
     private func ruleSummary(_ rule: PatchRule) -> some View {
