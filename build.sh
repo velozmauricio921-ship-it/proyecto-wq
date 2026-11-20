@@ -103,11 +103,19 @@ SWIFT_SOURCES=(
     Patches/views/FolderPatchSelectionView.swift
     Patches/WQPatchIntegrationSupport.swift
 )
-xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
-    -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
-    -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
-    -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
-    ${WQ_EXTRA_SWIFT_FLAGS:-} "${TRACE_SWIFT_FLAGS[@]}" "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
+if (( ${#TRACE_SWIFT_FLAGS[@]} > 0 )); then
+    xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
+        -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
+        -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
+        -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
+        ${WQ_EXTRA_SWIFT_FLAGS:-} "${TRACE_SWIFT_FLAGS[@]}" "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
+else
+    xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
+        -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
+        -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
+        -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
+        ${WQ_EXTRA_SWIFT_FLAGS:-} "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
+fi
 
 OBJC_SOURCES=(
     WQCore.m WQAccess.m WQPatchAccessBridge.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m
