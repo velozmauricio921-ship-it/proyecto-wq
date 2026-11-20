@@ -76,6 +76,7 @@ enum PatchTransaction {
         containerResolver: (String) throws -> URL,
         beforeWrite: ((Int) throws -> Void)? = nil,
         beforeDirectoryWrite: ((String, String) throws -> Void)? = nil,
+        beforeRestore: ((String, String, Bool) throws -> Void)? = nil,
         fileManager: FileManager = .default
     ) throws -> PatchTransactionReceipt {
         guard !project.rules.isEmpty || !project.directories.isEmpty else {
