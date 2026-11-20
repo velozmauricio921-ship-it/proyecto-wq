@@ -794,12 +794,33 @@ private struct PatchProjectDetailView: View {
         WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_START")
         Task.detached(priority: .userInitiated) {
             do {
-                let project = item.summary.schemaVersion >= 2
+                let requiresWorkspaceSync = item.summary.schemaVersion >= 2
+                WQPatchTrace.log(
+                    operationID,
+                    stage: "A_BEFORE_SYNCHRONIZE",
+                    result: "project=\(item.id.uuidString);schema=\(item.summary.schemaVersion);sync=\(requiresWorkspaceSync)"
+                )
+                let project = requiresWorkspaceSync
                     ? try PatchProjectLibrary.synchronizeWorkspace(item: item)
                     : baseProject
+                WQPatchTrace.log(
+                    operationID,
+                    stage: "B_AFTER_SYNCHRONIZE",
+                    result: "project=\(project.id.uuidString);sync=\(requiresWorkspaceSync ? "completed" : "skipped_schema_v1")"
+                )
                 await MainActor.run {
                     isWorking = false
+                    WQPatchTrace.log(
+                        operationID,
+                        stage: "C_BEFORE_AUTHORIZED_PROJECT_ASSIGNMENT",
+                        result: "project=\(project.id.uuidString)"
+                    )
                     authorizedApplyProject = project
+                    WQPatchTrace.log(
+                        operationID,
+                        stage: "D_AFTER_AUTHORIZED_PROJECT_ASSIGNMENT",
+                        result: "project=\(project.id.uuidString)"
+                    )
                     WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", duration: Date().timeIntervalSince(started))
                 }
             } catch let error as PatchPackageError {

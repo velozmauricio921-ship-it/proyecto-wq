@@ -337,7 +337,14 @@ struct WQPatchOperationFlowView: View {
                 operationTask?.cancel()
                 folders.removeAll()
             }
-            .onAppear { resolveAvailableContainers() }
+            .onAppear {
+                WQPatchTrace.log(
+                    project.id.uuidString,
+                    stage: "E_OPERATION_FLOW_ON_APPEAR",
+                    result: "project=\(project.id.uuidString)"
+                )
+                resolveAvailableContainers()
+            }
         }
     }
 
