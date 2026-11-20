@@ -57,3 +57,29 @@ BOOL WQPatchAuthorizePath(NSString *path)
     if (lstat(parent.fileSystemRepresentation, &metadata) != 0 || !S_ISDIR(metadata.st_mode)) return NO;
     return wq_grant(parent);
 }
+
+NSData *WQPatchContainerIdentity(NSString *path, NSString *bundleID)
+{
+    NSString *canonical = WQPatchCanonicalPath(path);
+    struct stat metadata;
+    if (lstat(canonical.fileSystemRepresentation, &metadata) != 0 ||
+        !S_ISDIR(metadata.st_mode)) {
+        return nil;
+    }
+
+    NSString *label = wq_container_label(canonical);
+    NSDictionary *identity = @{
+        @"bundleID": bundleID ?: @"",
+        @"containerLabel": label ?: @"",
+        @"containerUUID": canonical.lastPathComponent ?: @"",
+        @"canonicalPath": canonical ?: @"",
+        @"device": @(metadata.st_dev),
+        @"inode": @(metadata.st_ino),
+        @"type": @((metadata.st_mode & S_IFMT))
+    };
+    NSError *error = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:identity
+                                                  options:NSJSONWritingSortedKeys
+                                                    error:&error];
+    return error ? nil : data;
+}

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>TREM BALA MOD</string>
+	<string>BAIJ STORE MOD</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
@@ -93,7 +93,7 @@
 		<string>ja</string>
 	</array>
 	<key>CFBundleName</key>
-	<string>TREM BALA MOD</string>
+	<string>BAIJ STORE MOD</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

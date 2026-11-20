@@ -66,6 +66,14 @@ private struct PatchModuleCloserKey: EnvironmentKey {
     static let defaultValue: () -> Void = {}
 }
 
+private struct PatchContainerResolverKey: EnvironmentKey {
+    static let defaultValue: (String) -> URL? = { _ in nil }
+}
+
+private struct PatchPathAuthorizerKey: EnvironmentKey {
+    static let defaultValue: (String) -> Bool = { _ in false }
+}
+
 extension EnvironmentValues {
     var openPatchWorkspace: (String, String) -> Void {
         get { self[PatchWorkspaceOpenerKey.self] }
@@ -75,6 +83,16 @@ extension EnvironmentValues {
     var closePatchModule: () -> Void {
         get { self[PatchModuleCloserKey.self] }
         set { self[PatchModuleCloserKey.self] = newValue }
+    }
+
+    var resolvePatchContainer: (String) -> URL? {
+        get { self[PatchContainerResolverKey.self] }
+        set { self[PatchContainerResolverKey.self] = newValue }
+    }
+
+    var authorizePatchPath: (String) -> Bool {
+        get { self[PatchPathAuthorizerKey.self] }
+        set { self[PatchPathAuthorizerKey.self] = newValue }
     }
 }
 
@@ -152,6 +170,8 @@ struct WQPatchOperationFlowView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appLanguage) private var language
+    @Environment(\.resolvePatchContainer) private var resolvePatchContainer
+    @Environment(\.authorizePatchPath) private var authorizePatchPath
     let project: PatchProject
     let mode: Mode
     let onComplete: () -> Void
@@ -300,6 +320,7 @@ struct WQPatchOperationFlowView: View {
                 Text(alertMessage ?? "")
             }
             .onDisappear { folders.removeAll() }
+            .onAppear { resolveAvailableContainers() }
         }
     }
 
@@ -341,7 +362,7 @@ struct WQPatchOperationFlowView: View {
             do {
                 switch selectedMode {
                 case .apply:
-                    _ = try AuthorizedPatchService.apply(project: project, folders: currentFolders)
+                    _ = try AuthorizedPatchService.apply(project: project, folders: currentFolders, confirmedPreview: previews)
                 case .restore(let receipt):
                     try AuthorizedPatchService.restore(receipt: receipt, folders: currentFolders)
                 }
@@ -359,6 +380,28 @@ struct WQPatchOperationFlowView: View {
                 await MainActor.run {
                     isWorking = false
                     alertMessage = language.text("patch.error.apply")
+                }
+            }
+        }
+    }
+
+    private func resolveAvailableContainers() {
+        let bundleIDs = requiredBundleIDs.filter { folders[$0] == nil }
+        guard !bundleIDs.isEmpty else { return }
+        let resolver = resolvePatchContainer
+        let authorizer = authorizePatchPath
+        Task.detached(priority: .userInitiated) {
+            var resolved: [String: PatchScopedFolder] = [:]
+            for bundleID in bundleIDs {
+                guard let url = resolver(bundleID) else { continue }
+                if let folder = try? PatchScopedFolder(deviceURL: url, authorizePath: authorizer) {
+                    resolved[bundleID] = folder
+                }
+            }
+            await MainActor.run {
+                for (bundleID, folder) in resolved where folders[bundleID] == nil {
+                    folders[bundleID] = folder
+                    previews = []
                 }
             }
         }
@@ -508,6 +551,12 @@ private extension PatchOperationPreview.Action {
 @objc(WQPatchHostViewController)
 public final class WQPatchHostViewController: UIViewController {
     @objc public var openWorkspaceHandler: ((String, String) -> Void)?
+    @objc public var resolveApplicationContainerHandler: ((String) -> String?)? = { bundleID in
+        wqPatchResolveApplicationContainer(bundleID as NSString) as String?
+    }
+    @objc public var authorizePatchPathHandler: ((String) -> Bool)? = { path in
+        wqPatchAuthorizePath(path as NSString)
+    }
 
     private let draftCoordinator = PatchDraftCoordinator()
     private var hostingController: UIHostingController<AnyView>?
@@ -549,6 +598,13 @@ public final class WQPatchHostViewController: UIViewController {
                 .environment(\.closePatchModule) { [weak self] in
                     self?.navigationController?.popViewController(animated: true)
                 }
+                .environment(\.resolvePatchContainer) { [weak self] bundleID in
+                    guard let path = self?.resolveApplicationContainerHandler?(bundleID) else { return nil }
+                    return URL(fileURLWithPath: path, isDirectory: true)
+                }
+                .environment(\.authorizePatchPath) { [weak self] path in
+                    self?.authorizePatchPathHandler?(path) ?? false
+                }
         )
         let host = UIHostingController(rootView: rootView)
         addChild(host)
@@ -564,3 +620,9 @@ public final class WQPatchHostViewController: UIViewController {
         hostingController = host
     }
 }
+
+@_silgen_name("WQPatchResolveApplicationContainer")
+private func wqPatchResolveApplicationContainer(_ bundleID: NSString) -> NSString?
+
+@_silgen_name("WQPatchAuthorizePath")
+private func wqPatchAuthorizePath(_ path: NSString) -> Bool

@@ -92,6 +92,7 @@ SWIFT_SOURCES=(
     Patches/helpers/PatchDraftService.swift
     Patches/helpers/PatchDraftCoordinator.swift
     Patches/helpers/PatchTransaction.swift
+    Patches/helpers/PatchFileAccessAdapter.swift
     Patches/helpers/AuthorizedPatchService.swift
     Patches/views/PatchProjectsView.swift
     Patches/views/PatchProjectEditorView.swift
@@ -105,7 +106,7 @@ xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "
     ${WQ_EXTRA_SWIFT_FLAGS:-} "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
 
 OBJC_SOURCES=(
-    WQCore.m WQAccess.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m
+    WQCore.m WQAccess.m WQPatchAccessBridge.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m
     WQApps.m WQCache.m WQPlistEditor.m WQAuthGate.m WQPatchReader.m WQHexViewer.m
     WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m
     WQMediaStream.m WQWebServer.m WQTheme.m WQInspector.m main.m

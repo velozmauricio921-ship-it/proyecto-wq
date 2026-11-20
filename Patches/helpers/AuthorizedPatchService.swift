@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-struct PatchOperationPreview: Identifiable {
+struct PatchOperationPreview: Identifiable, Equatable {
     enum Action: String {
         case createDirectory
         case keepDirectory
@@ -15,12 +15,15 @@ struct PatchOperationPreview: Identifiable {
     let action: Action
     let replacementBytes: Int
     let existingBytes: Int64?
+    let targetSnapshot: PatchTargetSnapshot?
 }
 
 final class PatchScopedFolder {
     let url: URL
     private let scopedURL: URL
     private let accessGranted: Bool
+    private let pathAuthorizer: ((String) -> Bool)?
+    private let isResolvedWQContainer: Bool
 
     init(url: URL) throws {
         guard url.isFileURL,
@@ -30,6 +33,8 @@ final class PatchScopedFolder {
             scopedURL = url
         self.url = PatchPathValidator.canonicalFileURL(url)
         accessGranted = true
+        pathAuthorizer = nil
+        isResolvedWQContainer = false
 
             do {
                 try validate()
@@ -37,6 +42,27 @@ final class PatchScopedFolder {
                 url.stopAccessingSecurityScopedResource()
                 throw error
             }
+    }
+
+    init(testURL: URL, authorizePath: ((String) -> Bool)? = nil) throws {
+        guard testURL.isFileURL else { throw PatchPackageError.unsafeTargetPath }
+        scopedURL = testURL
+        url = PatchPathValidator.canonicalFileURL(testURL)
+        accessGranted = false
+        pathAuthorizer = authorizePath
+        isResolvedWQContainer = false
+        try validate()
+    }
+
+    init(deviceURL: URL, authorizePath: @escaping (String) -> Bool) throws {
+        guard deviceURL.isFileURL else { throw PatchPackageError.unsafeTargetPath }
+        scopedURL = deviceURL
+        url = PatchPathValidator.canonicalFileURL(deviceURL)
+        accessGranted = false
+        pathAuthorizer = authorizePath
+        isResolvedWQContainer = true
+        try validate()
+        try authorize(url)
     }
 
     deinit {
@@ -56,10 +82,30 @@ final class PatchScopedFolder {
     }
 
     func validate() throws {
-        guard !Self.isProtectedApplicationLocation(url.path),
-              Self.pathHasNoSymbolicLinks(url.path) else {
+        let allowed = isResolvedWQContainer
+            ? Self.isApplicationDataContainer(url.path)
+            : !Self.isProtectedApplicationLocation(url.path)
+        guard allowed, Self.pathHasNoSymbolicLinks(url.path) else {
             throw PatchPackageError.unsafeTargetPath
         }
+    }
+
+    func authorize(_ path: URL) throws {
+        try validate()
+        guard let pathAuthorizer else { return }
+        let canonical = PatchPathValidator.canonicalFileURL(path)
+        guard canonical.path == url.path || canonical.path.hasPrefix(url.path + "/"),
+              pathAuthorizer(canonical.path) else {
+            throw PatchPackageError.targetAppUnavailable(url.lastPathComponent)
+        }
+    }
+
+    private static func isApplicationDataContainer(_ path: String) -> Bool {
+        let canonical = PatchPathValidator.canonicalFileURL(URL(fileURLWithPath: path)).path
+        let root = "/private/var/mobile/Containers/Data/Application"
+        let url = URL(fileURLWithPath: canonical)
+        return url.deletingLastPathComponent().path == root
+            && UUID(uuidString: url.lastPathComponent) != nil
     }
 
     private static func pathHasNoSymbolicLinks(_ path: String) -> Bool {
@@ -89,6 +135,7 @@ enum AuthorizedPatchService {
             throw PatchPackageError.invalidProject
         }
                 try folders.values.forEach { try $0.validate() }
+        let access = try PatchFileAccessAdapter(bundleIdentifiers: bundleIDs, folders: folders)
 
         var targetKeys = Set<String>()
         var requestedDirectories = Set<String>()
@@ -133,13 +180,16 @@ enum AuthorizedPatchService {
                 containerRoot: folder.url
             )
             try validateDirectory(target, relativePath: relativePath, root: folder.url, fileManager: fileManager)
+            try access.authorize(bundleID: bundleID, relativePath: relativePath)
+            let snapshot = try access.snapshot(bundleID: bundleID, relativePath: relativePath, expectsDirectory: true)
             previews.append(PatchOperationPreview(
                 id: key,
                 bundleID: bundleID,
                 relativePath: relativePath,
                 action: fileManager.fileExists(atPath: target.path) ? .keepDirectory : .createDirectory,
                 replacementBytes: 0,
-                existingBytes: nil
+                existingBytes: nil,
+                targetSnapshot: snapshot
             ))
         }
 
@@ -159,13 +209,16 @@ enum AuthorizedPatchService {
                 containerRoot: folder.url
             )
             let existingBytes = try validateFile(target, relativePath: relativePath, root: folder.url, fileManager: fileManager)
+            try access.authorize(bundleID: bundleID, relativePath: relativePath)
+            let snapshot = try access.snapshot(bundleID: bundleID, relativePath: relativePath, expectsDirectory: false)
             previews.append(PatchOperationPreview(
                 id: key,
                 bundleID: bundleID,
                 relativePath: relativePath,
                 action: existingBytes == nil ? .createFile : .replaceFile,
                 replacementBytes: rule.replacementData.count,
-                existingBytes: existingBytes
+                existingBytes: existingBytes,
+                targetSnapshot: snapshot
             ))
         }
 
@@ -176,9 +229,35 @@ enum AuthorizedPatchService {
 
     static func apply(
         project: PatchProject,
-        folders: [String: PatchScopedFolder]
+        folders: [String: PatchScopedFolder],
+        confirmedPreview: [PatchOperationPreview]
     ) throws -> PatchTransactionReceipt {
-        _ = try prepare(project: project, folders: folders)
+        let currentPreview = try prepare(project: project, folders: folders)
+        guard currentPreview == confirmedPreview else {
+            throw PatchPackageError.operationPlanChanged
+        }
+
+        let access = try PatchFileAccessAdapter(
+            bundleIdentifiers: project.allBundleIdentifiers,
+            folders: folders
+        )
+        let confirmedByTarget = Dictionary(uniqueKeysWithValues: confirmedPreview.map { ($0.id, $0) })
+
+        func validateConfirmedTarget(bundleID: String, relativePath: String, isDirectory: Bool) throws {
+            let key = bundleID + "\0" + relativePath
+            guard let confirmed = confirmedByTarget[key] else {
+                throw PatchPackageError.operationPlanChanged
+            }
+            let current = try access.snapshot(
+                bundleID: bundleID,
+                relativePath: relativePath,
+                expectsDirectory: isDirectory
+            )
+            guard current == confirmed.targetSnapshot else {
+                throw PatchPackageError.operationPlanChanged
+            }
+        }
+
         return try PatchTransaction.apply(
             project: project,
             backupRoot: PatchProjectLibrary.backupRootURL(),
@@ -186,7 +265,27 @@ enum AuthorizedPatchService {
                 guard let folder = folders[bundleID] else {
                     throw PatchPackageError.targetAppUnavailable(bundleID)
                 }
+                try folder.authorize(folder.url)
                 return folder.url
+            },
+            beforeWrite: { index in
+                guard project.rules.indices.contains(index) else {
+                    throw PatchPackageError.invalidProject
+                }
+                let rule = project.rules[index]
+                try access.authorize(bundleID: rule.bundleID, relativePath: rule.relativePath)
+                try validateConfirmedTarget(
+                    bundleID: rule.bundleID,
+                    relativePath: rule.relativePath,
+                    isDirectory: false
+                )
+            },
+            beforeDirectoryWrite: { bundleID, relativePath in
+                try access.authorize(bundleID: bundleID, relativePath: relativePath)
+            },
+            beforeRestore: { bundleID, relativePath, isDirectory in
+                try access.authorize(bundleID: bundleID, relativePath: relativePath)
+                _ = isDirectory
             }
         )
     }
@@ -200,13 +299,19 @@ enum AuthorizedPatchService {
             throw PatchPackageError.invalidProject
         }
         try folders.values.forEach { try $0.validate() }
+        let access = try PatchFileAccessAdapter(bundleIdentifiers: required, folders: folders)
         try PatchTransaction.restore(
             receipt: receipt,
             containerResolver: { bundleID in
                 guard let folder = folders[bundleID] else {
                     throw PatchPackageError.targetAppUnavailable(bundleID)
                 }
+                try folder.authorize(folder.url)
                 return folder.url
+            },
+            beforeRestore: { bundleID, relativePath, isDirectory in
+                try access.authorize(bundleID: bundleID, relativePath: relativePath)
+                _ = isDirectory
             }
         )
     }
