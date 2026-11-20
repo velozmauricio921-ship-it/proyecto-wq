@@ -1,8 +1,8 @@
 import Darwin
 import Foundation
 
-struct PatchOperationPreview: Identifiable, Equatable {
-    enum Action: String {
+struct PatchOperationPreview: Identifiable, Equatable, Sendable {
+    enum Action: String, Sendable {
         case createDirectory
         case keepDirectory
         case createFile
@@ -18,7 +18,7 @@ struct PatchOperationPreview: Identifiable, Equatable {
     let targetSnapshot: PatchTargetSnapshot?
 }
 
-final class PatchScopedFolder {
+final class PatchScopedFolder: @unchecked Sendable {
     let url: URL
     private let scopedURL: URL
     private let accessGranted: Bool

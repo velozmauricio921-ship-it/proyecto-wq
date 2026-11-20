@@ -5452,7 +5452,7 @@ static void wq_apply_design(void);
 - (instancetype)init
 {
     if ((self = [super initWithNibName:nil bundle:nil])) {
-        self.title = @"BAIJ STORE MOD";
+        self.title = @"TREM BALA MOD";
     }
     return self;
 }

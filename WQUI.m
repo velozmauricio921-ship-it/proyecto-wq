@@ -195,8 +195,9 @@ static UIImage *wq_round_icon(UIImage *raw)
     }];
 }
 
-// Symbol tile for system services and extensions that have no icon at all,
-// picked from keywords in the bundle id.
+// Symbol tile for system services and extensions that have no icon at all.
+// Apple IDs can use known keywords; third-party IDs stay neutral because
+// their icons and semantics cannot be read reliably through this access layer.
 static UIImage *wq_service_tile(NSString *bundleID)
 {
     static NSArray<NSArray *> *rules;
@@ -257,7 +258,10 @@ static UIImage *wq_service_tile(NSString *bundleID)
     NSString *key = bundleID.lowercaseString;
     NSString *symbol = @"gearshape.fill";
     UIColor *color = UIColor.systemGrayColor;
-    for (NSArray *rule in rules) {
+    BOOL apple = [key hasPrefix:@"com.apple."] ||
+                 [key hasPrefix:@"group.com.apple."] ||
+                 [key hasPrefix:@"systemgroup.com.apple."];
+    for (NSArray *rule in apple ? rules : @[]) {
         BOOL hit = NO;
         for (NSString *word in rule[0]) if ([key containsString:word]) { hit = YES; break; }
         if (hit) { symbol = rule[1]; color = rule[2]; break; }

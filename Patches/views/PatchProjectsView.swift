@@ -786,7 +786,12 @@ private struct PatchProjectDetailView: View {
 
     private func beginAuthorizedApply() {
         guard let item, let baseProject = item.project else { return }
+        let operationID = UUID().uuidString
+        let started = Date()
+        WQPatchTrace.log(operationID, stage: "APPLY_BUTTON_PRESSED")
+        WQPatchTrace.log(operationID, stage: "AUTH_CHECK", result: "root_gate_active")
         isWorking = true
+        WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_START")
         Task.detached(priority: .userInitiated) {
             do {
                 let project = item.summary.schemaVersion >= 2
@@ -795,6 +800,7 @@ private struct PatchProjectDetailView: View {
                 await MainActor.run {
                     isWorking = false
                     authorizedApplyProject = project
+                    WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", duration: Date().timeIntervalSince(started))
                 }
             } catch let error as PatchPackageError {
                 await MainActor.run {
@@ -804,11 +810,13 @@ private struct PatchProjectDetailView: View {
                         messageKey: error.localizationKey,
                         messageArgument: error.localizationArgument
                     )
+                    WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", result: "error", duration: Date().timeIntervalSince(started))
                 }
             } catch {
                 await MainActor.run {
                     isWorking = false
                     actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.invalid_project")
+                    WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", result: "error", duration: Date().timeIntervalSince(started))
                 }
             }
         }

@@ -84,3 +84,12 @@ NSData *WQPatchContainerIdentity(NSString *path, NSString *bundleID)
                                                     error:&error];
     return error ? nil : data;
 }
+
+void WQPatchTrace(NSString *operationID, NSString *stage, NSString *result, double durationMilliseconds)
+{
+    wq_log(@"applypatch: op=%@ stage=%@ result=%@ duration_ms=%.1f",
+           operationID.length ? operationID : @"-",
+           stage.length ? stage : @"-",
+           result.length ? result : @"ok",
+           durationMilliseconds);
+}

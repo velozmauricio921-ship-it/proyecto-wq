@@ -5,7 +5,7 @@ import Foundation
 @_silgen_name("WQPatchContainerIdentity")
 private func wqPatchContainerIdentity(_ path: NSString, _ bundleID: NSString) -> NSData?
 
-struct PatchTransactionReceipt: Equatable, Identifiable {
+struct PatchTransactionReceipt: Equatable, Identifiable, Sendable {
     let id: UUID
     let projectID: UUID
     let journalURL: URL

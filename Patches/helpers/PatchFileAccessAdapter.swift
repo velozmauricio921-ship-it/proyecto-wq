@@ -2,7 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-struct PatchTargetSnapshot: Equatable {
+struct PatchTargetSnapshot: Equatable, Sendable {
     let device: UInt64
     let inode: UInt64
     let fileType: UInt32

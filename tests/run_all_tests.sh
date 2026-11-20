@@ -8,6 +8,10 @@ OUT=$(mktemp -d "$ROOT/.work/tests/all.XXXXXX")
 mkdir -p "$OUT/fixtures"
 export TMPDIR="$OUT/fixtures/"
 export PYTHONDONTWRITEBYTECODE=1
+TRACE_SWIFT_FLAGS=()
+if [[ "${WQ_APPLY_TRACE:-0}" == 1 ]]; then
+    TRACE_SWIFT_FLAGS=(-D WQ_APPLY_TRACE)
+fi
 MAC_SDK=$(xcrun --sdk macosx --show-sdk-path)
 ASAN_FLAG=""
 if [[ "${WQ_ASAN:-0}" == "1" ]]; then
@@ -141,7 +145,7 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
         -module-name WQPatchIntegration -parse-as-library -whole-module-optimization \
         -emit-module -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" \
         -emit-object -O -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
-        "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o" > "$OUT/swift-ios.log" 2>&1 || {
+        "${TRACE_SWIFT_FLAGS[@]}" "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o" > "$OUT/swift-ios.log" 2>&1 || {
         cat "$OUT/swift-ios.log" >&2
         exit 1
     }

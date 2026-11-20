@@ -27,7 +27,9 @@ static inline BOOL WQAppsSupportBundleIDValid(NSString *bundleID)
         bad = [[NSCharacterSet characterSetWithCharactersInString:
                 @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"] invertedSet];
     });
-    return [bundleID containsString:@"."] && [bundleID rangeOfCharacterFromSet:bad].location == NSNotFound;
+    // No dot required: older App Store apps can use one-word bundle IDs.
+    // The character set still rejects unsafe paths and separators.
+    return [bundleID rangeOfCharacterFromSet:bad].location == NSNotFound;
 }
 
 static inline BOOL WQAppsSupportIsInteger(id value)

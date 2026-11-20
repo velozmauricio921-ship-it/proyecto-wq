@@ -15,7 +15,7 @@ The original implementation and guide remain in `3105-1.1.1/3105-1.1.1/`.
 
 ## Authorization boundary
 
-Each target identifier must be mapped to a folder chosen with the iOS document picker. Apply displays the resolved create/replace operations and requires a separate confirmation. Targets are revalidated before writing, symbolic-link paths are rejected, and the original transaction code keeps backups, verifies replacement digests, rolls back failed writes, and restores only matching targets. Application data-container and installed application-bundle roots are rejected.
+Each target identifier is mapped to a folder that WQ Files can authorize. When its existing access bridge can resolve an application data container, that container is used; otherwise the user can choose an eligible folder with the iOS document picker. Manually selected application data-container and installed application-bundle roots are rejected. Apply displays the resolved create/replace operations and requires a separate confirmation. Targets are revalidated before writing, symbolic-link paths are rejected, and the adapted transaction code keeps backups, verifies replacement digests, rolls back failed writes, and restores only matching targets. Apply changes only the authorized target files and does not modify iOS sandbox configuration.
 
 `DevicePatchService.swift` and `ContainerStore.swift` are intentionally not compiled into this module. The former delegates target resolution to the latter, whose fallback can depend on privileged sandbox access. WQ's file/container browser is not used as an implicit patch authorization source.
 

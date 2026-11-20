@@ -669,7 +669,7 @@ static void wq_auth_validate(NSString *license, WQAuthCompletion completion)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.title = @"BAIJ STORE MOD";
+    self.title = @"TREM BALA MOD";
     wq_prism_install_background(self);
     self.view.backgroundColor = UIColor.clearColor;
     self.view.tintColor = wq_theme_accent();
