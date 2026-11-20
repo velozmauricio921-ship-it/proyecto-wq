@@ -1,30 +1,8 @@
-name: Build TREM BALA MOD IPA
-
-on:
-  push:
-  pull_request:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: macos-26
-    timeout-minutes: 60
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Run tests and build IPA
+   - name: Run tests and build IPA
         run: bash ./build.sh
         env:
-          WQFILES_FINAL_IPA: ${{ github.workspace }}/TREM-BALA-MOD.ipa
-           WQ_SKIP_PREFLIGHT: "1"
+          WQ_SKIP_PREFLIGHT: "1"
+          WQFILES_FINAL_IPA: ${{ github.workspace }}/TREM BALA MOD.ipa
           KEYAUTH_SECRET: ${{ secrets.KEYAUTH_SECRET }}
           KEYAUTH_OWNER_ID: ${{ secrets.KEYAUTH_OWNER_ID || vars.KEYAUTH_OWNER_ID }}
           KEYAUTH_APP_NAME: ${{ secrets.KEYAUTH_APP_NAME || vars.KEYAUTH_APP_NAME }}
@@ -32,7 +10,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TREM-BALA-MOD-ipa
-          path: TREM-BALA-MOD.ipa
+          name: TREM BALA MOD-ipa
+          path: TREM BALA MOD.ipa
           if-no-files-found: error
           retention-days: 14
