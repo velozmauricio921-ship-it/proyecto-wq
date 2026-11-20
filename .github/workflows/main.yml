@@ -1,4 +1,4 @@
-name: Build TREM BALA MOD IPA
+name: Build BAIJ STORE MOD IPA
 
 on:
   push:
@@ -21,11 +21,9 @@ jobs:
         run: xcodebuild -version
 
       - name: Run tests and build IPA
-        run: |
-          chmod +x tests/run_localization_tests.sh
-          bash ./build.sh
+        run: bash ./build.sh
         env:
-          WQFILES_FINAL_IPA: ${{ github.workspace }}/TREM-BALA-MOD.ipa
+          WQFILES_FINAL_IPA: ${{ github.workspace }}/BAIJ-STORE-MOD.ipa
           KEYAUTH_SECRET: ${{ secrets.KEYAUTH_SECRET }}
           KEYAUTH_OWNER_ID: ${{ secrets.KEYAUTH_OWNER_ID || vars.KEYAUTH_OWNER_ID }}
           KEYAUTH_APP_NAME: ${{ secrets.KEYAUTH_APP_NAME || vars.KEYAUTH_APP_NAME }}
@@ -33,7 +31,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TREM-BALA-MOD-ipa
-          path: TREM-BALA-MOD.ipa
+          name: BAIJ-STORE-MOD-ipa
+          path: BAIJ-STORE-MOD.ipa
           if-no-files-found: error
           retention-days: 14
