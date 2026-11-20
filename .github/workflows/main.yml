@@ -18,16 +18,23 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Show Xcode version
-        run: xcodebuild -version
+        run: |
+          set -euo pipefail
+          xcodebuild -version
 
       - name: Run tests and build IPA
         shell: bash
         run: |
           set -euo pipefail
+          : > "$GITHUB_WORKSPACE/build.log"
+          exec > >(tee -a "$GITHUB_WORKSPACE/build.log") 2>&1
+
+          echo "Starting IPA build in: $PWD"
+          ls -l build.sh tests/run_localization_tests.sh
           chmod +x build.sh tests/run_localization_tests.sh
           bash -n build.sh
-          echo "Starting IPA build in: $PWD"
-          bash ./build.sh 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          echo "Running build.sh"
+          bash ./build.sh
           echo "IPA build step completed"
         env:
           WQ_SKIP_PREFLIGHT: "1"
@@ -38,6 +45,7 @@ jobs:
 
       - name: Verify IPA output
         if: success()
+        shell: bash
         run: |
           set -euo pipefail
           ls -la "${{ github.workspace }}"
