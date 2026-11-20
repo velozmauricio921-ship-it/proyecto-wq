@@ -17,8 +17,9 @@ static BOOL WQPatchIsApplicationDataContainer(NSString *path)
 {
     NSString *canonical = WQPatchCanonicalPath(path);
     NSString *applicationRoot = @"/private/var/mobile/Containers/Data/Application";
+    NSUUID *containerUUID = [[NSUUID alloc] initWithUUIDString:canonical.lastPathComponent];
     if (![canonical.stringByDeletingLastPathComponent isEqualToString:applicationRoot] ||
-        ![NSUUID UUIDWithString:canonical.lastPathComponent]) {
+        !containerUUID) {
         return NO;
     }
     struct stat metadata;
