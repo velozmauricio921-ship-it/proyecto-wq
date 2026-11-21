@@ -81,29 +81,6 @@ trap cleanup EXIT
 APP="$OUT/Payload/WQFiles.app"
 mkdir -p "$APP"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-SWIFT_SOURCES=(
-    Patches/helpers/PatchProjectModels.swift
-    Patches/helpers/PatchPackageCodec.swift
-    Patches/helpers/PatchKeyStore.swift
-    Patches/helpers/PatchWorkspaceService.swift
-    Patches/helpers/FileManager+RecursiveFiles.swift
-    Patches/helpers/PatchProjectLibrary.swift
-    Patches/helpers/PatchProjectStore.swift
-    Patches/helpers/PatchDraftService.swift
-    Patches/helpers/PatchDraftCoordinator.swift
-    Patches/helpers/PatchTransaction.swift
-    Patches/helpers/PatchFileAccessAdapter.swift
-    Patches/views/PatchProjectsView.swift
-    Patches/views/PatchProjectEditorView.swift
-    Patches/views/FolderPatchSelectionView.swift
-    WQPatchIntegrationSupport.swift
-)
-xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
-    -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
-    -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
-    -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
-    ${WQ_EXTRA_SWIFT_FLAGS:-} "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
-
 OBJC_SOURCES=(
     WQCore.m WQAccess.m WQPatchAccessBridge.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m
     WQApps.m WQCache.m WQPlistEditor.m WQAuthGate.m WQPatchReader.m WQHexViewer.m
@@ -118,10 +95,11 @@ for source in "${OBJC_SOURCES[@]}"; do
         -Wall -Wextra -Werror -O2 ${WQ_EXTRA_CFLAGS:-} -I "$OUT" "$source" -o "$object"
 done
 
-xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" -O \
-    -framework UIKit -framework SwiftUI -framework Foundation -framework Security \
-    -framework UniformTypeIdentifiers -framework CryptoKit -framework Combine -framework JavaScriptCore \
-    "$OUT/WQPatchIntegration.o" "$OUT"/obj/*.o -lsqlite3 -lz -o "$APP/WQFiles"
+xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" \
+    -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
+    -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
+    -framework JavaScriptCore -framework AVKit -framework AVFoundation \
+    "$OUT"/obj/*.o -lsqlite3 -lz -o "$APP/WQFiles"
 cp Info.plist "$APP/Info.plist"
 # Create WQ Files-specific KeyAuth entries from CI configuration without changing the source plist.
 if [[ -n "${KEYAUTH_SECRET:-}" && -n "${KEYAUTH_OWNER_ID:-}" && -n "${KEYAUTH_APP_NAME:-}" ]]; then
