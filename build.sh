@@ -9,10 +9,6 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 cd "$ROOT"
 MINIMUM_IOS_VERSION=26.0
 FINAL_IPA=${WQFILES_FINAL_IPA:-WQFiles.ipa}
-TRACE_SWIFT_FLAGS=()
-if [[ "${WQ_APPLY_TRACE:-0}" == 1 ]]; then
-    TRACE_SWIFT_FLAGS=(-D WQ_APPLY_TRACE)
-fi
 
 # Publish only after the host regression suite passes. The packaged artifact
 # still needs device validation, but this prevents a known-broken source tree
@@ -60,7 +56,6 @@ EXPECTED_BUNDLE_ID=$(plist_value CFBundleIdentifier Info.plist)
 EXPECTED_VERSION=$(plist_value CFBundleShortVersionString Info.plist)
 EXPECTED_BUILD=$(plist_value CFBundleVersion Info.plist)
 EXPECTED_MINIMUM_OS=$(plist_value MinimumOSVersion Info.plist)
-/usr/bin/plutil -lint entitlements.plist >/dev/null 2>&1 || fail "entitlements.plist is malformed or unreadable"
 APP_GROUP=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' entitlements.plist)
 [[ -n "$APP_GROUP" ]] || fail "entitlements.plist has no App Group"
 # WQ Files' folder (Backups, AppBackups) shows in the Files app only with both
@@ -85,13 +80,6 @@ trap cleanup EXIT
 
 APP="$OUT/Payload/WQFiles.app"
 mkdir -p "$APP"
-SIGNING_ENTITLEMENTS="$OUT/WQFiles.entitlements.plist"
-/usr/bin/plutil -convert xml1 -o "$SIGNING_ENTITLEMENTS" entitlements.plist || \
-    fail "could not normalize entitlements.plist for codesign"
-/usr/bin/plutil -lint "$SIGNING_ENTITLEMENTS" >/dev/null 2>&1 || \
-    fail "normalized signing entitlements are malformed"
-SIGNING_APP_GROUP=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$SIGNING_ENTITLEMENTS")
-[[ "$SIGNING_APP_GROUP" == "$APP_GROUP" ]] || fail "normalized entitlements changed the App Group"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 SWIFT_SOURCES=(
     Patches/helpers/PatchProjectModels.swift
@@ -105,25 +93,16 @@ SWIFT_SOURCES=(
     Patches/helpers/PatchDraftCoordinator.swift
     Patches/helpers/PatchTransaction.swift
     Patches/helpers/PatchFileAccessAdapter.swift
-    Patches/helpers/AuthorizedPatchService.swift
     Patches/views/PatchProjectsView.swift
     Patches/views/PatchProjectEditorView.swift
     Patches/views/FolderPatchSelectionView.swift
-    Patches/WQPatchIntegrationSupport.swift
+    WQPatchIntegrationSupport.swift
 )
-if (( ${#TRACE_SWIFT_FLAGS[@]} > 0 )); then
-    xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
-        -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
-        -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
-        -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
-        ${WQ_EXTRA_SWIFT_FLAGS:-} "${TRACE_SWIFT_FLAGS[@]}" "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
-else
-    xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
-        -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
-        -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
-        -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
-        ${WQ_EXTRA_SWIFT_FLAGS:-} "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
-fi
+xcrun --sdk iphoneos swiftc -target arm64-apple-ios"$MINIMUM_IOS_VERSION" -sdk "$SDK" \
+    -module-name WQPatchIntegration -parse-as-library -whole-module-optimization -emit-module \
+    -emit-module-path "$OUT/WQPatchIntegration.swiftmodule" -emit-object -O \
+    -emit-objc-header-path "$OUT/WQPatchIntegration-Swift.h" \
+    ${WQ_EXTRA_SWIFT_FLAGS:-} "${SWIFT_SOURCES[@]}" -o "$OUT/WQPatchIntegration.o"
 
 OBJC_SOURCES=(
     WQCore.m WQAccess.m WQPatchAccessBridge.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m
@@ -196,7 +175,7 @@ if [[ -d "$ROOT/Preloaded" ]]; then
     cp -R "$ROOT/Preloaded/." "$APP/Preloaded/"
 fi
 plutil -convert binary1 "$APP/Info.plist"
-codesign -f -s - --entitlements "$SIGNING_ENTITLEMENTS" "$APP"
+codesign -f -s - --entitlements entitlements.plist "$APP"
 
 validate_app() {
     local app_path=$1
