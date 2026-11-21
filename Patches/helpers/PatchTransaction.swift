@@ -552,6 +552,18 @@ enum PatchTransaction {
     }
 
     private static func containerFingerprint(_ url: URL) -> Data {
-        digest(Data(PatchPathValidator.canonicalFileURL(url).path.utf8))
+        let canonicalURL = PatchPathValidator.canonicalFileURL(url)
+        var metadata = stat()
+        guard lstat(canonicalURL.path, &metadata) == 0,
+              (metadata.st_mode & S_IFMT) == S_IFDIR else {
+            return Data()
+        }
+        let identity = [
+            canonicalURL.path,
+            String(UInt64(metadata.st_dev)),
+            String(UInt64(metadata.st_ino)),
+            String(metadata.st_mode & S_IFMT)
+        ].joined(separator: "\0")
+        return digest(Data(identity.utf8))
     }
 }

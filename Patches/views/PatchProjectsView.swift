@@ -10,12 +10,10 @@ private enum PatchPackagePickerPolicy {
 
 struct PatchProjectsView: View {
     @Environment(\.appLanguage) private var language
-    @Environment(\.closePatchModule) private var closePatchModule
     @EnvironmentObject private var draftCoordinator: PatchDraftCoordinator
     @StateObject private var store = PatchProjectStore()
     @State private var showCreate = false
     @State private var showImporter = false
-    @State private var showFolderCapture = false
     @State private var searchText = ""
     @State private var selectedID: UUID?
     @State private var isWorkingAction = false
@@ -77,7 +75,7 @@ struct PatchProjectsView: View {
             selectedID = nil
             return
         }
-        _ = AuthorizedPatchService.latestReceipt(projectID: item.id)
+        _ = DevicePatchService.latestReceipt(projectID: item.id)
     }
 
     init() {
@@ -101,7 +99,7 @@ struct PatchProjectsView: View {
                 VStack(spacing: 12) {
                     ZStack(alignment: .trailing) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("TREM BALA MOD")
+                            Text("BAIJ STORE")
                                 .font(.system(size: 30, weight: .heavy, design: .rounded))
                                 .foregroundStyle(Color(red: 0.83, green: 0.96, blue: 1.00))
                                 .tracking(-1.2)
@@ -234,7 +232,7 @@ struct PatchProjectsView: View {
             }
             // Bottom action bar for selected feature (inside NavigationStack content)
             if let sel = selectedID, let selectedItem = store.items.first(where: { $0.id == sel }) {
-                let selectedHasReceipt = AuthorizedPatchService.latestReceipt(projectID: selectedItem.id) != nil
+                let selectedHasReceipt = DevicePatchService.latestReceipt(projectID: selectedItem.id) != nil
                 VStack(spacing: 0) {
                     Divider()
                     HStack(alignment: .center, spacing: 12) {
@@ -272,17 +270,70 @@ struct PatchProjectsView: View {
                                     .foregroundStyle(AppTheme.accent)
                             }
                         } else {
-                            NavigationLink {
-                                PatchProjectDetailView(store: store, projectID: selectedItem.id)
-                            } label: {
-                                Label(language.text("patch.details"), systemImage: "slider.horizontal.3")
-                                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(Capsule().fill(AppTheme.accent.opacity(0.16)))
-                                    .foregroundStyle(AppTheme.accent)
-                            }
-                            .disabled(isWorkingAction)
+                            Toggle("", isOn: Binding(
+                                get: { selectedHasReceipt },
+                                set: { newValue in
+                                    guard !isWorkingAction else { return }
+                                    if newValue {
+                                        Task.detached(priority: .userInitiated) {
+                                            await MainActor.run { isWorkingAction = true }
+                                            do {
+                                                let project = selectedItem.summary.schemaVersion >= 2 ? try PatchProjectLibrary.synchronizeWorkspace(item: selectedItem) : (selectedItem.project!)
+                                                _ = try await DevicePatchService.apply(project: project)
+                                                await MainActor.run {
+                                                    AudioFeedback.play(isEnabled: true)
+                                                    store.reload()
+                                                    refreshSelectionState()
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.done", messageKey: "patch.applied_message")
+                                                }
+                                            } catch let error as PatchPackageError {
+                                                await MainActor.run {
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: error.localizationKey, messageArgument: error.localizationArgument)
+                                                }
+                                            } catch {
+                                                await MainActor.run {
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.apply")
+                                                }
+                                            }
+                                            await MainActor.run {
+                                                isWorkingAction = false
+                                                receiptRefresh = UUID()
+                                                refreshSelectionState()
+                                            }
+                                        }
+                                    } else {
+                                        Task.detached(priority: .userInitiated) {
+                                            await MainActor.run { isWorkingAction = true }
+                                            do {
+                                                if let receipt = DevicePatchService.latestReceipt(projectID: selectedItem.id) {
+                                                    try DevicePatchService.restore(receipt: receipt)
+                                                    await MainActor.run {
+                                                        AudioFeedback.play(isEnabled: false)
+                                                        store.reload()
+                                                        refreshSelectionState()
+                                                        actionAlert = PatchStoreAlert(titleKey: "common.done", messageKey: "patch.restored_message")
+                                                    }
+                                                }
+                                            } catch let error as PatchPackageError {
+                                                await MainActor.run {
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: error.localizationKey, messageArgument: error.localizationArgument)
+                                                }
+                                            } catch {
+                                                await MainActor.run {
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.restore")
+                                                }
+                                            }
+                                            await MainActor.run {
+                                                isWorkingAction = false
+                                                receiptRefresh = UUID()
+                                                refreshSelectionState()
+                                            }
+                                        }
+                                    }
+                                }
+                            ))
+                            .labelsHidden()
+                            .tint(AppTheme.accent)
                         }
                     }
                     .padding(.horizontal, AppTheme.pageInset)
@@ -305,12 +356,6 @@ struct PatchProjectsView: View {
         .navigationTitle(language.text("patch.title"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button(action: closePatchModule) {
-                    Image(systemName: "chevron.left")
-                }
-                .accessibilityLabel(language.text("patch.back"))
-            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Button {
@@ -322,11 +367,6 @@ struct PatchProjectsView: View {
                         showImporter = true
                     } label: {
                         Label(language.text("patch.import"), systemImage: "square.and.arrow.down")
-                    }
-                    Button {
-                        showFolderCapture = true
-                    } label: {
-                        Label(language.text("patch.create_from_folder"), systemImage: "folder.badge.plus")
                     }
                 } label: {
                     if store.isBusy {
@@ -361,11 +401,6 @@ struct PatchProjectsView: View {
                 existingProject: nil,
                 passwordIsProtected: false
             ) { project, password in
-                store.create(project: project, password: password)
-            }
-        }
-        .sheet(isPresented: $showFolderCapture) {
-            WQPatchFolderCaptureView { project, password in
                 store.create(project: project, password: password)
             }
         }
@@ -610,13 +645,12 @@ private struct PatchUnlockView: View {
 
 private struct PatchProjectDetailView: View {
     @Environment(\.appLanguage) private var language
-    @Environment(\.openPatchWorkspace) private var openPatchWorkspace
     @ObservedObject var store: PatchProjectStore
     let projectID: UUID
     @State private var showEditor = false
     @State private var editingRule: PatchRule?
-    @State private var authorizedApplyProject: PatchProject?
-    @State private var restoreReceipt: PatchTransactionReceipt?
+    @State private var showApplyConfirmation = false
+    @State private var showRestoreConfirmation = false
     @State private var isWorking = false
     @State private var actionAlert: PatchStoreAlert?
     
@@ -626,7 +660,7 @@ private struct PatchProjectDetailView: View {
     }
 
     private var receipt: PatchTransactionReceipt? {
-        AuthorizedPatchService.latestReceipt(projectID: projectID)
+        DevicePatchService.latestReceipt(projectID: projectID)
     }
 
     private var isWorkspaceProject: Bool {
@@ -654,15 +688,18 @@ private struct PatchProjectDetailView: View {
                             Text("\(project.directories.count)")
                         }
                         if let workspaceURL = item.workspaceURL {
-                            Button {
-                                openPatchWorkspace(workspaceURL.path, project.name)
+                            NavigationLink {
+                                FileBrowserView(
+                                    containerPath: workspaceURL.path,
+                                    title: project.name,
+                                    bundleID: nil
+                                )
                             } label: {
                                 Label(
                                     language.text("patch.open_workspace"),
                                     systemImage: "folder"
                                 )
                             }
-                            .buttonStyle(.plain)
                         }
                     } header: {
                         Text(language.text("patch.workspace"))
@@ -708,15 +745,15 @@ private struct PatchProjectDetailView: View {
 
                 Section {
                     Button {
-                        beginAuthorizedApply()
+                        showApplyConfirmation = true
                     } label: {
                         actionLabel("patch.apply", systemImage: "checkmark.shield.fill")
                     }
                     .disabled(isWorking)
 
                     if receipt != nil {
-                        Button {
-                            restoreReceipt = receipt
+                        Button(role: .destructive) {
+                            showRestoreConfirmation = true
                         } label: {
                             actionLabel("patch.restore", systemImage: "arrow.uturn.backward.circle")
                         }
@@ -757,17 +794,23 @@ private struct PatchProjectDetailView: View {
                 updateRule(updatedRule)
             }
         }
-        .sheet(item: $authorizedApplyProject) { project in
-            WQPatchOperationFlowView(project: project, mode: .apply) {
-                store.reload()
-            }
+        .confirmationDialog(
+            language.text("patch.apply_confirm_title"),
+            isPresented: $showApplyConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(language.text("patch.apply")) { apply() }
+            Button(language.text("common.cancel"), role: .cancel) {}
+        } message: {
+            Text(language.text("patch.apply_confirm_message"))
         }
-        .sheet(item: $restoreReceipt) { receipt in
-            if let item, let project = item.project {
-                WQPatchOperationFlowView(project: project, mode: .restore(receipt)) {
-                    store.reload()
-                }
-            }
+        .confirmationDialog(
+            language.text("patch.restore_confirm_title"),
+            isPresented: $showRestoreConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(language.text("patch.restore"), role: .destructive) { restore() }
+            Button(language.text("common.cancel"), role: .cancel) {}
         }
         .alert(item: $actionAlert) { alert in
             Alert(
@@ -782,44 +825,6 @@ private struct PatchProjectDetailView: View {
     private func actionLabel(_ key: String, systemImage: String) -> some View {
         Label(language.text(key), systemImage: systemImage)
             .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func beginAuthorizedApply() {
-        guard let item, let baseProject = item.project else { return }
-        let operationID = UUID().uuidString
-        let started = Date()
-        WQPatchTrace.log(operationID, stage: "APPLY_BUTTON_PRESSED")
-        WQPatchTrace.log(operationID, stage: "AUTH_CHECK", result: "root_gate_active")
-        isWorking = true
-        WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_START")
-        Task.detached(priority: .userInitiated) {
-            do {
-                let project = item.summary.schemaVersion >= 2
-                    ? try PatchProjectLibrary.synchronizeWorkspace(item: item)
-                    : baseProject
-                await MainActor.run {
-                    isWorking = false
-                    authorizedApplyProject = project
-                    WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", duration: Date().timeIntervalSince(started))
-                }
-            } catch let error as PatchPackageError {
-                await MainActor.run {
-                    isWorking = false
-                    actionAlert = PatchStoreAlert(
-                        titleKey: "common.failed",
-                        messageKey: error.localizationKey,
-                        messageArgument: error.localizationArgument
-                    )
-                    WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", result: "error", duration: Date().timeIntervalSince(started))
-                }
-            } catch {
-                await MainActor.run {
-                    isWorking = false
-                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.invalid_project")
-                    WQPatchTrace.log(operationID, stage: "PROJECT_SYNC_COMPLETE", result: "error", duration: Date().timeIntervalSince(started))
-                }
-            }
-        }
     }
 
     private func ruleSummary(_ rule: PatchRule) -> some View {
@@ -862,6 +867,69 @@ private struct PatchProjectDetailView: View {
         }
     }
 
+    private func apply() {
+        guard let item, let baseProject = item.project else { return }
+        isWorking = true
+        Task.detached(priority: .userInitiated) {
+            do {
+                let project = item.summary.schemaVersion >= 2
+                    ? try PatchProjectLibrary.synchronizeWorkspace(item: item)
+                    : baseProject
+                _ = try await DevicePatchService.apply(project: project)
+                await MainActor.run {
+                    AudioFeedback.play(isEnabled: true)
+                    store.reload()
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(titleKey: "common.done", messageKey: "patch.applied_message")
+                }
+            } catch let error as PatchPackageError {
+                await MainActor.run {
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(
+                        titleKey: "common.failed",
+                        messageKey: error.localizationKey,
+                        messageArgument: error.localizationArgument
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.apply")
+                }
+            }
+        }
+    }
+
+    // Export functionality removed to avoid accidental leaking of .3105 packages.
+
+    private func restore() {
+        guard let receipt else { return }
+        isWorking = true
+        Task.detached(priority: .userInitiated) {
+            do {
+                try DevicePatchService.restore(receipt: receipt)
+                await MainActor.run {
+                    AudioFeedback.play(isEnabled: false)
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(titleKey: "common.done", messageKey: "patch.restored_message")
+                }
+            } catch let error as PatchPackageError {
+                await MainActor.run {
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(
+                        titleKey: "common.failed",
+                        messageKey: error.localizationKey,
+                        messageArgument: error.localizationArgument
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.restore")
+                }
+            }
+        }
+    }
 }
 
 private struct PatchShareRequest: Identifiable {

@@ -1,163 +1,834 @@
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 
-struct PatchProjectEditorView: View {
+private enum PatchPackagePickerPolicy {
+    static let packageType = UTType(filenameExtension: "3105") ?? .data
+    static let allowedContentTypes: [UTType] = [packageType, .data]
+    static let copiesSelectedDocument = true
+}
+
+struct PatchProjectsView: View {
     @Environment(\.appLanguage) private var language
-    @Environment(\.dismiss) private var dismiss
-    let existingProject: PatchProject?
-    let passwordIsProtected: Bool
-    let initialDraft: PatchProjectDraft?
-    let onSave: (PatchProject, String?) -> Void
+    @EnvironmentObject private var draftCoordinator: PatchDraftCoordinator
+    @StateObject private var store = PatchProjectStore()
+    @State private var showCreate = false
+    @State private var showImporter = false
+    @State private var searchText = ""
+    @State private var selectedID: UUID?
+    @State private var isWorkingAction = false
+    @State private var receiptRefresh = UUID()
+    @State private var actionAlert: PatchStoreAlert?
+    @State private var restoreFailureCounts: [UUID: Int] = [:]
+    @State private var selectedGroup: String? = nil
+    @State private var selectedSubgroup: String? = nil
 
-    @State private var name: String
-    @State private var bundleID: String
-    @State private var bundleIdentifiers: [String]
-    @State private var directories: [PatchDirectory]
-    @State private var rules: [PatchRule]
-    @State private var password = ""
-    @State private var ruleEditor: PatchRuleEditorContext?
-    @State private var validationMessageKey: String?
+    private var filteredItems: [PatchLibraryItem] {
+        // Start from full list and apply category/subcategory filtering first
+        var items = store.items
+        if let group = selectedGroup {
+            items = items.filter { $0.categories.first == group }
+        }
+        if let subgroup = selectedSubgroup {
+            items = items.filter { $0.categories.count > 1 && $0.categories[1] == subgroup }
+        }
 
-    init(
-        existingProject: PatchProject?,
-        passwordIsProtected: Bool,
-        initialDraft: PatchProjectDraft? = nil,
-        onSave: @escaping (PatchProject, String?) -> Void
-    ) {
-        self.existingProject = existingProject
-        self.passwordIsProtected = passwordIsProtected
-        self.initialDraft = initialDraft
-        self.onSave = onSave
-        _name = State(initialValue: existingProject?.name ?? initialDraft?.name ?? "")
-        _bundleID = State(initialValue: initialDraft?.bundleIdentifiers.first ?? "")
-        _bundleIdentifiers = State(
-            initialValue: existingProject?.bundleIdentifiers
-                ?? initialDraft?.bundleIdentifiers
-                ?? []
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return items }
+
+        return items.filter { item in
+            if item.packageURL.lastPathComponent.localizedCaseInsensitiveContains(query) {
+                return true
+            }
+            guard let project = item.project else { return false }
+            return project.name.localizedCaseInsensitiveContains(query)
+                || project.allBundleIdentifiers.contains {
+                    $0.localizedCaseInsensitiveContains(query)
+                }
+                || project.directories.contains {
+                    $0.relativePath.localizedCaseInsensitiveContains(query)
+                }
+                || project.rules.contains {
+                    $0.relativePath.localizedCaseInsensitiveContains(query)
+                        || $0.replacementFilename.localizedCaseInsensitiveContains(query)
+                }
+        }
+    }
+
+    private var availableGroups: [String] {
+        let groups = Set(store.items.compactMap { $0.categories.first })
+        return Array(groups).sorted()
+    }
+
+    private func availableSubgroups(for group: String) -> [String] {
+        let subs = Set(store.items.compactMap { item -> String? in
+            let cats = item.categories
+            guard cats.first == group, cats.count > 1 else { return nil }
+            return cats[1]
+        })
+        return Array(subs).sorted()
+    }
+
+    private func refreshSelectionState() {
+        guard let selected = selectedID,
+              let item = store.items.first(where: { $0.id == selected }) else {
+            selectedID = nil
+            return
+        }
+        _ = DevicePatchService.latestReceipt(projectID: item.id)
+    }
+
+    init() {
+#if targetEnvironment(simulator)
+        _showCreate = State(
+            initialValue: ProcessInfo.processInfo.arguments.contains("--simulate-patch-editor")
         )
-        _directories = State(
-            initialValue: existingProject?.directories ?? initialDraft?.directories ?? []
-        )
-        _rules = State(initialValue: existingProject?.rules ?? initialDraft?.rules ?? [])
+#endif
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section(language.text("patch.project")) {
-                    TextField(language.text("patch.project_name"), text: $name)
-                        .textInputAutocapitalization(.words)
-                }
+            ZStack {
+                LinearGradient(
+                    colors: [Color(red: 0.05, green: 0.10, blue: 0.18), Color(red: 0.12, green: 0.16, blue: 0.24)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
 
-                if existingProject == nil {
-                    Section {
-                        if let capturedBundle = initialDraft?.bundleIdentifiers.first {
-                            LabeledContent(language.text("patch.target_bundle")) {
-                                Text(capturedBundle)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else {
-                            TextField("com.example.app", text: $bundleID)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .font(.body.monospaced())
+                VStack(spacing: 12) {
+                    ZStack(alignment: .trailing) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("BAIJ STORE")
+                                .font(.system(size: 30, weight: .heavy, design: .rounded))
+                                .foregroundStyle(Color(red: 0.83, green: 0.96, blue: 1.00))
+                                .tracking(-1.2)
+                                .textCase(.uppercase)
                         }
-                    } header: {
-                        Text(language.text("patch.target_bundle"))
-                    } footer: {
-                        Text(language.text("patch.workspace_bundle_footer"))
-                    }
-                }
-
-                if existingProject != nil || !rules.isEmpty || !directories.isEmpty {
-                    Section {
-                    ForEach(rules) { rule in
-                        Button {
-                            ruleEditor = PatchRuleEditorContext(rule: rule)
-                        } label: {
-                            HStack(spacing: 10) {
-                                ruleRow(rule)
-                                Spacer(minLength: 8)
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityHint(language.text("patch.edit_rule_hint"))
-                    }
-                    .onDelete { rules.remove(atOffsets: $0) }
-
-                        if existingProject != nil {
-                            Button {
-                                ruleEditor = PatchRuleEditorContext(rule: nil)
-                            } label: {
-                                Label(language.text("patch.add_rule"), systemImage: "plus.circle.fill")
-                            }
-                        }
-                        if !directories.isEmpty {
-                            LabeledContent(language.text("patch.folders")) {
-                                Text("\(directories.count)")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    } header: {
-                        Text(language.text("patch.captured_content"))
-                    } footer: {
-                        Text(language.text("patch.workspace_edit_footer"))
-                    }
-                }
-
-                Section {
-                    if existingProject == nil {
-                        SecureField(language.text("patch.password_optional"), text: $password)
-                            .textContentType(.newPassword)
-                    } else {
-                        Label(
-                            language.text(passwordIsProtected ? "patch.password_locked" : "patch.no_password"),
-                            systemImage: passwordIsProtected ? "lock.fill" : "lock.open"
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .fill(Color(red: 0.12, green: 0.22, blue: 0.34))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                        .stroke(AppTheme.accent.opacity(0.9), lineWidth: 2)
+                                )
                         )
-                    }
-                } header: {
-                    Text(language.text("patch.password"))
-                } footer: {
-                    Text(language.text(existingProject == nil
-                        ? "patch.password_immutable_footer"
-                        : "patch.password_existing_footer"))
-                }
 
-                if let validationMessageKey {
-                    Section {
-                        Label(language.text(validationMessageKey), systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
+                        Circle()
+                            .fill(AppTheme.accent)
+                            .frame(width: 42, height: 42)
+                            .padding(.trailing, 18)
+                            .overlay(
+                                Text("B")
+                                    .font(.system(size: 21, weight: .heavy))
+                                    .foregroundStyle(Color(red: 0.04, green: 0.12, blue: 0.20))
+                            )
                     }
+                    .padding(.horizontal, 14)
+
+                    if !availableGroups.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(availableGroups, id: \.self) { g in
+                                    Button(action: {
+                                        if selectedGroup == g {
+                                            selectedGroup = nil
+                                            selectedSubgroup = nil
+                                        } else {
+                                            selectedGroup = g
+                                            selectedSubgroup = nil
+                                        }
+                                    }) {
+                                        Text(g)
+                                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                            .padding(.vertical, 9)
+                                            .padding(.horizontal, 14)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .fill(selectedGroup == g ? AppTheme.accent : Color(white: 0.18))
+                                            )
+                                            .foregroundStyle(selectedGroup == g ? .black : .white)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, AppTheme.pageInset)
+                            .padding(.vertical, 8)
+                        }
+                        if let group = selectedGroup {
+                            let subs = availableSubgroups(for: group)
+                            if !subs.isEmpty {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        ForEach(subs, id: \.self) { s in
+                                            Button(action: {
+                                                if selectedSubgroup == s { selectedSubgroup = nil } else { selectedSubgroup = s }
+                                            }) {
+                                                Text(s)
+                                                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                                                    .padding(.vertical, 7)
+                                                    .padding(.horizontal, 12)
+                                                    .background(
+                                                        RoundedRectangle(cornerRadius: 8)
+                                                            .fill(selectedSubgroup == s ? AppTheme.accent : Color(white: 0.18))
+                                                    )
+                                                    .foregroundStyle(selectedSubgroup == s ? .black : .white)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                    .padding(.horizontal, AppTheme.pageInset)
+                                    .padding(.bottom, 6)
+                                }
+                            }
+                        }
+                    }
+
+                    List {
+                        if store.items.isEmpty && !store.isBusy {
+                            emptyState
+                                .listRowSeparator(.hidden)
+                        } else if filteredItems.isEmpty && !store.isBusy {
+                            searchEmptyState
+                                .listRowSeparator(.hidden)
+                        } else {
+                            ForEach(filteredItems) { item in
+                                Button(action: {
+                                    if selectedID == item.id {
+                                        selectedID = nil
+                                    } else {
+                                        selectedID = item.id
+                                        refreshSelectionState()
+                                    }
+                                }) {
+                                    PatchProjectRow(item: item, language: language)
+                                        .overlay(
+                                            Group {
+                                                if selectedID == item.id {
+                                                    RoundedRectangle(cornerRadius: 12)
+                                                        .stroke(AppTheme.accent, lineWidth: 2)
+                                                        .shadow(color: AppTheme.accent.opacity(0.55), radius: 10, x: 0, y: 0)
+                                                } else {
+                                                    RoundedRectangle(cornerRadius: 12)
+                                                        .stroke(Color.clear, lineWidth: 0)
+                                                }
+                                            }
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .onDelete { offsets in
+                                offsets.map { filteredItems[$0] }.forEach(store.delete)
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
+                    .background(Color.clear)
                 }
             }
-            .navigationTitle(language.text(existingProject == nil ? "patch.new" : "patch.edit"))
+            // Bottom action bar for selected feature (inside NavigationStack content)
+            if let sel = selectedID, let selectedItem = store.items.first(where: { $0.id == sel }) {
+                let selectedHasReceipt = DevicePatchService.latestReceipt(projectID: selectedItem.id) != nil
+                VStack(spacing: 0) {
+                    Divider()
+                    HStack(alignment: .center, spacing: 12) {
+                        let selectedTitle = selectedItem.packageURL.deletingPathExtension().lastPathComponent
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(selectedTitle.isEmpty ? (selectedItem.project?.name ?? language.text("patch.title")) : selectedTitle)
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+
+                            Text(selectedHasReceipt ? "ACTIVE" : "INACTIVE")
+                                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                .foregroundStyle(selectedHasReceipt ? AppTheme.accent : .white.opacity(0.7))
+                                .textCase(.uppercase)
+                        }
+
+                        Spacer()
+
+                        if isWorkingAction {
+                            ProgressView()
+                                .tint(AppTheme.accent)
+                        } else if selectedItem.isLocked {
+                            Button {
+                                Task.detached(priority: .userInitiated) {
+                                    await MainActor.run { store.requestUnlock(for: selectedItem) }
+                                }
+                            } label: {
+                                Text(language.text("patch.unlock"))
+                                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        Capsule().fill(AppTheme.accent.opacity(0.12))
+                                    )
+                                    .foregroundStyle(AppTheme.accent)
+                            }
+                        } else {
+                            Toggle("", isOn: Binding(
+                                get: { selectedHasReceipt },
+                                set: { newValue in
+                                    guard !isWorkingAction else { return }
+                                    if newValue {
+                                        Task.detached(priority: .userInitiated) {
+                                            await MainActor.run { isWorkingAction = true }
+                                            do {
+                                                let project = selectedItem.summary.schemaVersion >= 2 ? try PatchProjectLibrary.synchronizeWorkspace(item: selectedItem) : (selectedItem.project!)
+                                                _ = try await DevicePatchService.apply(project: project)
+                                                await MainActor.run {
+                                                    AudioFeedback.play(isEnabled: true)
+                                                    store.reload()
+                                                    refreshSelectionState()
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.done", messageKey: "patch.applied_message")
+                                                }
+                                            } catch let error as PatchPackageError {
+                                                await MainActor.run {
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: error.localizationKey, messageArgument: error.localizationArgument)
+                                                }
+                                            } catch {
+                                                await MainActor.run {
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.apply")
+                                                }
+                                            }
+                                            await MainActor.run {
+                                                isWorkingAction = false
+                                                receiptRefresh = UUID()
+                                                refreshSelectionState()
+                                            }
+                                        }
+                                    } else {
+                                        Task.detached(priority: .userInitiated) {
+                                            await MainActor.run { isWorkingAction = true }
+                                            do {
+                                                if let receipt = DevicePatchService.latestReceipt(projectID: selectedItem.id) {
+                                                    try DevicePatchService.restore(receipt: receipt)
+                                                    await MainActor.run {
+                                                        AudioFeedback.play(isEnabled: false)
+                                                        store.reload()
+                                                        refreshSelectionState()
+                                                        actionAlert = PatchStoreAlert(titleKey: "common.done", messageKey: "patch.restored_message")
+                                                    }
+                                                }
+                                            } catch let error as PatchPackageError {
+                                                await MainActor.run {
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: error.localizationKey, messageArgument: error.localizationArgument)
+                                                }
+                                            } catch {
+                                                await MainActor.run {
+                                                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.restore")
+                                                }
+                                            }
+                                            await MainActor.run {
+                                                isWorkingAction = false
+                                                receiptRefresh = UUID()
+                                                refreshSelectionState()
+                                            }
+                                        }
+                                    }
+                                }
+                            ))
+                            .labelsHidden()
+                            .tint(AppTheme.accent)
+                        }
+                    }
+                    .padding(.horizontal, AppTheme.pageInset)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(Color(red: 0.10, green: 0.18, blue: 0.26))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(AppTheme.accent.opacity(0.4), lineWidth: 1.2)
+                            )
+                    )
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
+                }
+                .id(receiptRefresh)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        } // NavigationStack end
+        .navigationTitle(language.text("patch.title"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button {
+                        showCreate = true
+                    } label: {
+                        Label(language.text("patch.new"), systemImage: "doc.badge.plus")
+                    }
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label(language.text("patch.import"), systemImage: "square.and.arrow.down")
+                    }
+                } label: {
+                    if store.isBusy {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "plus")
+                    }
+                }
+                .disabled(store.isBusy)
+                .accessibilityLabel(language.text("patch.add"))
+            }
+        }
+        .sheet(isPresented: $showImporter) {
+            FileDocumentPicker(
+                allowedContentTypes: PatchPackagePickerPolicy.allowedContentTypes,
+                copiesSelectedDocument: PatchPackagePickerPolicy.copiesSelectedDocument,
+                allowsMultipleSelection: false,
+                onSelection: { result in
+                    showImporter = false
+                    if case .success(let urls) = result, let url = urls.first {
+                        store.importPackage(at: url)
+                    }
+                },
+                onCancel: {
+                    showImporter = false
+                }
+            )
+            .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showCreate) {
+            PatchProjectEditorView(
+                existingProject: nil,
+                passwordIsProtected: false
+            ) { project, password in
+                store.create(project: project, password: password)
+            }
+        }
+        .sheet(item: $draftCoordinator.request) { request in
+            PatchProjectEditorView(
+                existingProject: nil,
+                passwordIsProtected: false,
+                initialDraft: request.draft
+            ) { project, password in
+                store.create(project: project, password: password)
+                draftCoordinator.clear()
+            }
+        }
+        .sheet(item: $store.passwordRequest, onDismiss: store.cancelUnlock) { _ in
+            PatchUnlockView(store: store)
+        }
+        .alert(item: $store.alert) { alert in
+            Alert(
+                title: Text(language.text(alert.titleKey)),
+                message: Text(alert.message(language: language)),
+                dismissButton: .default(Text(language.text("common.ok")))
+            )
+        }
+        .onAppear(perform: consumeExternalImport)
+        .onChange(of: draftCoordinator.importRequest?.id) { _ in
+            consumeExternalImport()
+        }
+    }
+
+    private func consumeExternalImport() {
+        guard let request = draftCoordinator.importRequest else { return }
+        draftCoordinator.clearImport()
+        store.importPackage(from: request.source)
+    }
+
+    @ViewBuilder
+    private func itemRow(_ item: PatchLibraryItem) -> some View {
+        if item.isLocked {
+            Button { store.requestUnlock(for: item) } label: {
+                PatchProjectRow(item: item, language: language)
+            }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink {
+                PatchProjectDetailView(store: store, projectID: item.id)
+            } label: {
+                PatchProjectRow(item: item, language: language)
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "shippingbox")
+                .font(.system(size: AppTheme.emptyIconSize, weight: .light))
+                .foregroundStyle(AppTheme.accent)
+            Text(language.text("patch.empty_title"))
+                .font(.headline)
+            Text(language.text("patch.empty_message"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button(language.text("patch.new")) { showCreate = true }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 64)
+    }
+
+    private var searchEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: AppTheme.emptyIconSize, weight: .light))
+                .foregroundStyle(.secondary)
+            Text(language.text("patch.search_empty"))
+                .font(.headline)
+            Text(language.text("patch.search_empty_message"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 64)
+    }
+}
+
+private struct PatchProjectRow: View {
+    let item: PatchLibraryItem
+    let language: AppLanguage
+
+    var body: some View {
+        HStack(spacing: 12) {
+            PatchCubeIcon(isLocked: item.isLocked)
+
+            VStack(alignment: .leading, spacing: 4) {
+                let fileTitle = item.packageURL.deletingPathExtension().lastPathComponent
+                Text((fileTitle.isEmpty ? (item.project?.name ?? language.text("patch.locked_project")) : fileTitle).uppercased())
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                Text(item.isLocked
+                     ? language.text("patch.tap_to_unlock").uppercased()
+                     : language.text(
+                        item.summary.schemaVersion >= 2 ? "patch.workspace_items_count" : "patch.rules_count",
+                        Int64((item.project?.rules.count ?? 0) + (item.project?.directories.count ?? 0))
+                     ).uppercased())
+                    .font(.caption)
+                    .foregroundStyle(Color(white: 0.8))
+            }
+
+            Spacer()
+
+            if item.summary.isPasswordProtected {
+                Image(systemName: "key.fill")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.accent)
+                    .accessibilityLabel(language.text("patch.password_protected"))
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(red: 0.10, green: 0.18, blue: 0.26))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(AppTheme.accent.opacity(0.3), lineWidth: 1.2)
+                )
+        )
+        .shadow(color: Color.black.opacity(0.18), radius: 10, x: 0, y: 4)
+        .padding(.horizontal, AppTheme.pageInset)
+        .padding(.vertical, 6)
+    }
+}
+
+private struct PatchCubeIcon: View {
+    let isLocked: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(LinearGradient(
+                    colors: [Color(red: 0.12, green: 0.22, blue: 0.34), Color(red: 0.07, green: 0.16, blue: 0.26)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(
+                        colors: [Color(red: 0.78, green: 0.95, blue: 1.0), Color(red: 0.44, green: 0.77, blue: 0.98)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ))
+                    .frame(width: 24, height: 24)
+
+                Circle()
+                    .stroke(Color(red: 0.12, green: 0.24, blue: 0.36), lineWidth: 2)
+                    .frame(width: 18, height: 18)
+
+                Rectangle()
+                    .fill(Color(red: 0.12, green: 0.24, blue: 0.36))
+                    .frame(width: 2, height: 22)
+
+                Rectangle()
+                    .fill(Color(red: 0.12, green: 0.24, blue: 0.36))
+                    .frame(width: 22, height: 2)
+
+                Circle()
+                    .fill(AppTheme.accent)
+                    .frame(width: 5, height: 5)
+            }
+            .frame(width: 28, height: 28)
+
+            if isLocked {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .padding(4)
+                    .background(
+                        Circle()
+                            .fill(Color(red: 0.08, green: 0.15, blue: 0.24))
+                    )
+                    .offset(x: 10, y: 10)
+            }
+        }
+        .frame(width: 34, height: 34)
+        .cornerRadius(10)
+    }
+}
+
+private struct PatchUnlockView: View {
+    @Environment(\.appLanguage) private var language
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var store: PatchProjectStore
+    @State private var password = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField(language.text("patch.password"), text: $password)
+                        .textContentType(.password)
+                        .submitLabel(.done)
+                        .onSubmit(unlock)
+                        .onChange(of: password) { _ in
+                            store.clearUnlockError()
+                        }
+                    if let errorKey = store.unlockErrorKey {
+                        Text(language.text(errorKey))
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } footer: {
+                    Text(language.text("patch.password_once_message"))
+                }
+            }
+            .navigationTitle(language.text("patch.unlock"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(language.text("common.cancel")) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(language.text("common.done"), action: save)
-                }
-            }
-            .sheet(item: $ruleEditor) { context in
-                PatchRuleEditorView(rule: context.rule) { savedRule in
-                    if let index = rules.firstIndex(where: { $0.id == savedRule.id }) {
-                        rules[index] = savedRule
-                    } else {
-                        rules.append(savedRule)
-                    }
+                    Button(language.text("patch.unlock"), action: unlock)
+                        .disabled(password.isEmpty || store.isBusy)
                 }
             }
         }
     }
 
-    private func ruleRow(_ rule: PatchRule) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private func unlock() {
+        guard !password.isEmpty else { return }
+        store.unlock(password: password)
+    }
+}
+
+private struct PatchProjectDetailView: View {
+    @Environment(\.appLanguage) private var language
+    @ObservedObject var store: PatchProjectStore
+    let projectID: UUID
+    @State private var showEditor = false
+    @State private var editingRule: PatchRule?
+    @State private var showApplyConfirmation = false
+    @State private var showRestoreConfirmation = false
+    @State private var isWorking = false
+    @State private var actionAlert: PatchStoreAlert?
+    
+
+    private var item: PatchLibraryItem? {
+        store.items.first(where: { $0.id == projectID })
+    }
+
+    private var receipt: PatchTransactionReceipt? {
+        DevicePatchService.latestReceipt(projectID: projectID)
+    }
+
+    private var isWorkspaceProject: Bool {
+        (item?.summary.schemaVersion ?? 1) >= 2
+    }
+
+    var body: some View {
+        List {
+            if let item, let project = item.project {
+                if isWorkspaceProject {
+                    Section {
+                        ForEach(project.allBundleIdentifiers, id: \.self) { bundleID in
+                            Label {
+                                Text(bundleID)
+                                    .font(.subheadline.monospaced())
+                            } icon: {
+                                Image(systemName: "app.dashed")
+                                    .foregroundStyle(AppTheme.accent)
+                            }
+                        }
+                        LabeledContent(language.text("patch.files")) {
+                            Text("\(project.rules.count)")
+                        }
+                        LabeledContent(language.text("patch.folders")) {
+                            Text("\(project.directories.count)")
+                        }
+                        if let workspaceURL = item.workspaceURL {
+                            NavigationLink {
+                                FileBrowserView(
+                                    containerPath: workspaceURL.path,
+                                    title: project.name,
+                                    bundleID: nil
+                                )
+                            } label: {
+                                Label(
+                                    language.text("patch.open_workspace"),
+                                    systemImage: "folder"
+                                )
+                            }
+                        }
+                    } header: {
+                        Text(language.text("patch.workspace"))
+                    } footer: {
+                        Text(language.text("patch.workspace_detail_footer"))
+                    }
+                } else {
+                    Section {
+                        ForEach(project.rules) { rule in
+                            Button {
+                                editingRule = rule
+                            } label: {
+                                HStack(spacing: 10) {
+                                    ruleSummary(rule)
+                                    Spacer(minLength: 8)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint(language.text("patch.edit_rule_hint"))
+                        }
+                    } header: {
+                        Text(language.text("patch.rules"))
+                    } footer: {
+                        Text(language.text("patch.legacy_footer"))
+                    }
+                }
+
+                Section(language.text("patch.password")) {
+                    HStack(spacing: 12) {
+                        Image(systemName: item.summary.isPasswordProtected ? "lock.fill" : "lock.open")
+                            .foregroundStyle(AppTheme.accent)
+                            .frame(width: 24)
+                        Text(language.text(item.summary.isPasswordProtected
+                            ? "patch.password_locked"
+                            : "patch.no_password"))
+                            .font(.subheadline)
+                    }
+                }
+
+                Section {
+                    Button {
+                        showApplyConfirmation = true
+                    } label: {
+                        actionLabel("patch.apply", systemImage: "checkmark.shield.fill")
+                    }
+                    .disabled(isWorking)
+
+                    if receipt != nil {
+                        Button(role: .destructive) {
+                            showRestoreConfirmation = true
+                        } label: {
+                            actionLabel("patch.restore", systemImage: "arrow.uturn.backward.circle")
+                        }
+                        .disabled(isWorking)
+                    }
+
+                    // Export disabled to avoid leaking .3105 files
+                } footer: {
+                    Text(language.text("patch.apply_footer"))
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(item?.project?.name ?? language.text("patch.title"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if isWorking {
+                    ProgressView()
+                } else if !isWorkspaceProject {
+                    Button(language.text("patch.edit")) { showEditor = true }
+                        .disabled(item?.project == nil)
+                }
+            }
+        }
+        .sheet(isPresented: $showEditor) {
+            if let item, let project = item.project {
+                PatchProjectEditorView(
+                    existingProject: project,
+                    passwordIsProtected: item.summary.isPasswordProtected
+                ) { updatedProject, _ in
+                    store.update(project: updatedProject)
+                }
+            }
+        }
+        .sheet(item: $editingRule) { rule in
+            PatchRuleEditorView(rule: rule) { updatedRule in
+                updateRule(updatedRule)
+            }
+        }
+        .confirmationDialog(
+            language.text("patch.apply_confirm_title"),
+            isPresented: $showApplyConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(language.text("patch.apply")) { apply() }
+            Button(language.text("common.cancel"), role: .cancel) {}
+        } message: {
+            Text(language.text("patch.apply_confirm_message"))
+        }
+        .confirmationDialog(
+            language.text("patch.restore_confirm_title"),
+            isPresented: $showRestoreConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(language.text("patch.restore"), role: .destructive) { restore() }
+            Button(language.text("common.cancel"), role: .cancel) {}
+        }
+        .alert(item: $actionAlert) { alert in
+            Alert(
+                title: Text(language.text(alert.titleKey)),
+                message: Text(alert.message(language: language)),
+                dismissButton: .default(Text(language.text("common.ok")))
+            )
+        }
+        
+    }
+
+    private func actionLabel(_ key: String, systemImage: String) -> some View {
+        Label(language.text(key), systemImage: systemImage)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func ruleSummary(_ rule: PatchRule) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
             Text(rule.bundleID)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
@@ -165,254 +836,116 @@ struct PatchProjectEditorView: View {
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
-            if rule.hasReplacement {
-                Text(rule.replacementFilename)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.accent)
-            } else {
-                Label(language.text("patch.replacement_required"), systemImage: "exclamationmark.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-            }
+            Label(rule.replacementFilename, systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption)
+                .foregroundStyle(AppTheme.accent)
         }
         .padding(.vertical, 3)
     }
 
-    private func save() {
-        let projectName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !projectName.isEmpty, projectName.utf8.count <= 120 else {
-            validationMessageKey = "patch.error.invalid_project"
+    private func updateRule(_ updatedRule: PatchRule) {
+        guard var project = item?.project,
+              let index = project.rules.firstIndex(where: { $0.id == updatedRule.id }) else {
             return
         }
-        if existingProject == nil, initialDraft == nil {
-            do {
-                let canonical = try PatchPathValidator.canonicalBundleIdentifier(bundleID)
-                guard canonical == bundleID.trimmingCharacters(in: .whitespacesAndNewlines) else {
-                    throw PatchPackageError.invalidBundleIdentifier
-                }
-                bundleID = canonical
-                bundleIdentifiers = [canonical]
-            } catch let error as PatchPackageError {
-                validationMessageKey = error.localizationKey
-                return
-            } catch {
-                validationMessageKey = "patch.error.invalid_bundle"
-                return
-            }
-        }
-        guard !bundleIdentifiers.isEmpty || !rules.isEmpty || !directories.isEmpty else {
-            validationMessageKey = "patch.error.invalid_project"
-            return
-        }
-        guard let incompleteRule = rules.first(where: { !$0.hasReplacement }) else {
-            saveCompleteProject(named: projectName)
-            return
-        }
-        validationMessageKey = "patch.error.replacement_required"
-        ruleEditor = PatchRuleEditorContext(rule: incompleteRule)
-    }
-
-    private func saveCompleteProject(named projectName: String) {
-        let project = PatchProject(
-            id: existingProject?.id ?? UUID(),
-            name: projectName,
-            createdAt: existingProject?.createdAt ?? Date(),
-            updatedAt: Date(),
-            bundleIdentifiers: bundleIdentifiers,
-            directories: directories,
-            rules: rules
-        )
+        project.rules[index] = updatedRule
+        project.updatedAt = Date()
         do {
             try PatchPackageCodec.validate(project)
-            onSave(project, existingProject == nil && !password.isEmpty ? password : nil)
-            dismiss()
+            store.update(project: project)
         } catch let error as PatchPackageError {
-            validationMessageKey = error.localizationKey
+            actionAlert = PatchStoreAlert(
+                titleKey: "common.failed",
+                messageKey: error.localizationKey,
+                messageArgument: error.localizationArgument
+            )
         } catch {
-            validationMessageKey = "patch.error.invalid_project"
-        }
-    }
-}
-
-private struct PatchRuleEditorContext: Identifiable {
-    let id = UUID()
-    let rule: PatchRule?
-}
-
-struct PatchRuleEditorView: View {
-    @Environment(\.appLanguage) private var language
-    @Environment(\.dismiss) private var dismiss
-    let originalRule: PatchRule?
-    let onSave: (PatchRule) -> Void
-
-    @State private var bundleID: String
-    @State private var relativePath: String
-    @State private var replacementFilename: String
-    @State private var replacementData: Data
-    @State private var showFileImporter = false
-    @State private var isImporting = false
-    @State private var validationMessageKey: String?
-
-    init(rule: PatchRule?, onSave: @escaping (PatchRule) -> Void) {
-        originalRule = rule
-        self.onSave = onSave
-        _bundleID = State(initialValue: rule?.bundleID ?? "")
-        _relativePath = State(initialValue: rule?.relativePath ?? "")
-        _replacementFilename = State(initialValue: rule?.replacementFilename ?? "")
-        _replacementData = State(initialValue: rule?.replacementData ?? Data())
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("com.example.app", text: $bundleID)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.body.monospaced())
-                    TextField("Library/path/file", text: $relativePath)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.body.monospaced())
-                } header: {
-                    Text(language.text("patch.destination"))
-                } footer: {
-                    Text(language.text("patch.bundle_not_uuid_footer"))
-                }
-
-                Section(language.text("patch.replacement_file")) {
-                    Button {
-                        showFileImporter = true
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: replacementFilename.isEmpty ? "doc.badge.plus" : "doc.fill")
-                                .foregroundStyle(AppTheme.accent)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(replacementFilename.isEmpty
-                                     ? language.text("patch.choose_file")
-                                     : replacementFilename)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Text(language.text(replacementFilename.isEmpty
-                                     ? "patch.replacement_required"
-                                     : "patch.change_replacement"))
-                                    .font(.caption)
-                                    .foregroundStyle(replacementFilename.isEmpty ? Color.orange : Color.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .disabled(isImporting)
-                    if isImporting {
-                        HStack(spacing: 10) {
-                            ProgressView()
-                            Text(language.text("patch.importing_replacement"))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    if !replacementFilename.isEmpty {
-                        LabeledContent(
-                            language.text("patch.file_size"),
-                            value: ByteCountFormatter.string(
-                                fromByteCount: Int64(replacementData.count),
-                                countStyle: .file
-                            )
-                        )
-                    }
-                }
-
-                if let validationMessageKey {
-                    Section {
-                        Label(language.text(validationMessageKey), systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                    }
-                }
-            }
-            .navigationTitle(language.text(originalRule == nil ? "patch.add_rule" : "patch.edit_rule"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(language.text("common.cancel")) { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(language.text("common.done"), action: save)
-                        .disabled(isImporting)
-                }
-            }
-            .sheet(isPresented: $showFileImporter) {
-                FileDocumentPicker(
-                    allowsMultipleSelection: false,
-                    onSelection: { result in
-                        showFileImporter = false
-                        importFile(result)
-                    },
-                    onCancel: {
-                        showFileImporter = false
-                    }
-                )
-                .ignoresSafeArea()
-            }
+            actionAlert = PatchStoreAlert(
+                titleKey: "common.failed",
+                messageKey: "patch.error.invalid_project"
+            )
         }
     }
 
-    private func importFile(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, let url = urls.first else { return }
-        isImporting = true
-        validationMessageKey = nil
-        DispatchQueue.global(qos: .userInitiated).async {
-            let hasAccess = url.startAccessingSecurityScopedResource()
-            defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
+    private func apply() {
+        guard let item, let baseProject = item.project else { return }
+        isWorking = true
+        Task.detached(priority: .userInitiated) {
             do {
-                let values = try url.resourceValues(
-                    forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]
-                )
-                guard values.isDirectory != true,
-                      values.isSymbolicLink != true,
-                      values.isRegularFile == true else {
-                    throw PatchPackageError.invalidProject
-                }
-                let importedData = try Data(contentsOf: url, options: .mappedIfSafe)
-                DispatchQueue.main.async {
-                    replacementData = importedData
-                    replacementFilename = url.lastPathComponent
-                    isImporting = false
+                let project = item.summary.schemaVersion >= 2
+                    ? try PatchProjectLibrary.synchronizeWorkspace(item: item)
+                    : baseProject
+                _ = try await DevicePatchService.apply(project: project)
+                await MainActor.run {
+                    AudioFeedback.play(isEnabled: true)
+                    store.reload()
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(titleKey: "common.done", messageKey: "patch.applied_message")
                 }
             } catch let error as PatchPackageError {
-                DispatchQueue.main.async {
-                    validationMessageKey = error.localizationKey
-                    isImporting = false
+                await MainActor.run {
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(
+                        titleKey: "common.failed",
+                        messageKey: error.localizationKey,
+                        messageArgument: error.localizationArgument
+                    )
                 }
             } catch {
-                DispatchQueue.main.async {
-                    validationMessageKey = "patch.error.invalid_project"
-                    isImporting = false
+                await MainActor.run {
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.apply")
                 }
             }
         }
     }
 
-    private func save() {
-        do {
-            let canonicalBundle = try PatchPathValidator.canonicalBundleIdentifier(bundleID)
-            let canonicalPath = try PatchPathValidator.canonicalRelativePath(relativePath)
-            guard !replacementFilename.isEmpty else { throw PatchPackageError.invalidProject }
-            onSave(PatchRule(
-                id: originalRule?.id ?? UUID(),
-                bundleID: canonicalBundle,
-                relativePath: canonicalPath,
-                replacementFilename: replacementFilename,
-                replacementData: replacementData
-            ))
-            dismiss()
-        } catch let error as PatchPackageError {
-            validationMessageKey = error.localizationKey
-        } catch {
-            validationMessageKey = "patch.error.invalid_project"
+    // Export functionality removed to avoid accidental leaking of .3105 packages.
+
+    private func restore() {
+        guard let receipt else { return }
+        isWorking = true
+        Task.detached(priority: .userInitiated) {
+            do {
+                try DevicePatchService.restore(receipt: receipt)
+                await MainActor.run {
+                    AudioFeedback.play(isEnabled: false)
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(titleKey: "common.done", messageKey: "patch.restored_message")
+                }
+            } catch let error as PatchPackageError {
+                await MainActor.run {
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(
+                        titleKey: "common.failed",
+                        messageKey: error.localizationKey,
+                        messageArgument: error.localizationArgument
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    isWorking = false
+                    actionAlert = PatchStoreAlert(titleKey: "common.failed", messageKey: "patch.error.restore")
+                }
+            }
         }
     }
+}
+
+private struct PatchShareRequest: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct PatchActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(
+        _ uiViewController: UIActivityViewController,
+        context: Context
+    ) {}
 }

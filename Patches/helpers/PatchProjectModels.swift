@@ -1,6 +1,6 @@
 import Foundation
 
-struct PatchRule: Codable, Identifiable, Hashable, Sendable {
+struct PatchRule: Codable, Identifiable, Hashable {
     var id: UUID
     var bundleID: String
     var relativePath: String
@@ -28,7 +28,7 @@ struct PatchRule: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-struct PatchDirectory: Codable, Identifiable, Hashable, Sendable {
+struct PatchDirectory: Codable, Identifiable, Hashable {
     var id: UUID
     var bundleID: String
     var relativePath: String
@@ -44,7 +44,7 @@ struct PatchDirectory: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-struct PatchProject: Codable, Identifiable, Hashable, Sendable {
+struct PatchProject: Codable, Identifiable, Hashable {
     var id: UUID
     var name: String
     var createdAt: Date
@@ -148,9 +148,6 @@ enum PatchPackageError: Error, Equatable {
     case symbolicLinkUnsupported
     case applyFailed
     case restoreFailed
-    case operationPlanChanged
-    case operationFailed(String)
-    case recoveryRequired(String)
     case invalidImportLink
     case remoteImportFailed
     case licenseRevoked
@@ -172,9 +169,6 @@ extension PatchPackageError: LocalizedError {
         case .symbolicLinkUnsupported: return "patch.error.symlink"
         case .applyFailed: return "patch.error.apply"
         case .restoreFailed: return "patch.error.restore"
-        case .operationPlanChanged: return "patch.error.plan_changed"
-        case .operationFailed(_): return "patch.error.operation_failed"
-        case .recoveryRequired(_): return "patch.error.recovery_required"
         case .invalidImportLink: return "patch.error.invalid_import_link"
         case .remoteImportFailed: return "patch.error.remote_import"
         case .licenseRevoked: return "patch.error.license_revoked"
@@ -182,13 +176,7 @@ extension PatchPackageError: LocalizedError {
     }
 
     var errorDescription: String? {
-        if case .operationFailed(let detail) = self {
-            return String(format: AppLanguage().text(localizationKey), detail)
-        }
-        if case .recoveryRequired(let detail) = self {
-            return String(format: AppLanguage().text(localizationKey), detail)
-        }
-        let message = AppLanguage().text(localizationKey)
+        let message = String(localized: String.LocalizationValue(localizationKey))
         if let localizationArgument {
             return String(format: message, localizationArgument)
         }

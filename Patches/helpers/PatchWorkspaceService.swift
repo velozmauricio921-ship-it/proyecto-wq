@@ -21,22 +21,18 @@ enum PatchWorkspaceService {
 
     static func patchesRootURL(fileManager: FileManager = .default) throws -> URL {
         let supportRoot = try documentsRootURL(fileManager: fileManager)
-        let wqRoot = supportRoot.appendingPathComponent("WQFiles", isDirectory: true)
-        let root = wqRoot.appendingPathComponent("Patches", isDirectory: true)
+        let hiddenRoot = supportRoot.appendingPathComponent(".3105", isDirectory: true)
+        let root = hiddenRoot.appendingPathComponent("Patches", isDirectory: true)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
 
-        let documentsLegacyRoot = try fileManager.url(
+        let legacyRoot = try fileManager.url(
             for: .documentDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         ).appendingPathComponent("Patches", isDirectory: true)
-        let hiddenLegacyRoot = supportRoot
-            .appendingPathComponent(".3105", isDirectory: true)
-            .appendingPathComponent("Patches", isDirectory: true)
 
-        for legacyRoot in [documentsLegacyRoot, hiddenLegacyRoot]
-        where fileManager.fileExists(atPath: legacyRoot.path) && legacyRoot.path != root.path {
+        if fileManager.fileExists(atPath: legacyRoot.path), legacyRoot.path != root.path {
             let existing = (try? fileManager.contentsOfDirectory(
                 at: legacyRoot,
                 includingPropertiesForKeys: nil,
@@ -44,63 +40,14 @@ enum PatchWorkspaceService {
             )) ?? []
             for item in existing {
                 let destination = root.appendingPathComponent(item.lastPathComponent)
-                guard !fileManager.fileExists(atPath: destination.path),
-                      let values = try? item.resourceValues(
-                        forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
-                      ), values.isDirectory == true, values.isSymbolicLink != true,
-                      let manifest = try? readManifest(workspaceURL: item),
-                                            manifest.schemaVersion == manifestSchemaVersion,
-                                            isSafeWorkspaceTree(item, fileManager: fileManager) else { continue }
-                try? fileManager.copyItem(at: item, to: destination)
+                if !fileManager.fileExists(atPath: destination.path) {
+                    try? fileManager.moveItem(at: item, to: destination)
+                }
             }
+            try? fileManager.removeItem(at: legacyRoot)
         }
 
         return root
-    }
-
-    private static func isSafeWorkspaceTree(
-        _ workspaceURL: URL,
-        fileManager: FileManager
-    ) -> Bool {
-        let root = workspaceURL.standardizedFileURL
-        var enumerationFailed = false
-        guard let enumerator = fileManager.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
-            options: [],
-            errorHandler: { _, _ in
-                enumerationFailed = true
-                return false
-            }
-        ) else { return false }
-
-        while let item = enumerator.nextObject() as? URL {
-            guard let values = try? item.resourceValues(
-                forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
-            ), values.isSymbolicLink != true else { return false }
-            let path = item.standardizedFileURL.path
-            guard path.hasPrefix(root.path + "/") else { return false }
-            let relative = String(path.dropFirst(root.path.count + 1))
-            if relative == manifestFilename {
-                guard values.isRegularFile == true else { return false }
-                continue
-            }
-
-            let components = relative.split(separator: "/")
-                        guard let bundleComponent = components.first else { return false }
-                        let bundleID = String(bundleComponent)
-                        guard (try? PatchPathValidator.canonicalBundleIdentifier(bundleID)) == bundleID else {
-                return false
-            }
-            if components.count == 1 {
-                guard values.isDirectory == true else { return false }
-            } else {
-                let relativePath = components.dropFirst().joined(separator: "/")
-                guard (try? PatchPathValidator.canonicalRelativePath(relativePath)) != nil,
-                      values.isDirectory == true || values.isRegularFile == true else { return false }
-            }
-        }
-        return !enumerationFailed
     }
 
     static func createWorkspace(
@@ -204,14 +151,42 @@ enum PatchWorkspaceService {
         fileManager: FileManager = .default
     ) throws -> URL {
         let root = try patchesRoot ?? patchesRootURL(fileManager: fileManager)
-        if workspaceURL(
+        let existing = workspaceURL(
             projectID: project.id,
             patchesRoot: root,
             fileManager: fileManager
-        ) != nil {
-            throw PatchPackageError.duplicateTarget
+        )
+        let displaced = root.appendingPathComponent(
+            ".3105-displaced-workspace-\(UUID().uuidString)",
+            isDirectory: true
+        )
+
+        if let existing {
+            try fileManager.moveItem(at: existing, to: displaced)
         }
-        return try createWorkspace(for: project, patchesRoot: root, fileManager: fileManager)
+        do {
+            let replacement = try createWorkspace(
+                for: project,
+                patchesRoot: root,
+                fileManager: fileManager
+            )
+            if fileManager.fileExists(atPath: displaced.path) {
+                try fileManager.removeItem(at: displaced)
+            }
+            return replacement
+        } catch {
+            if let replacement = workspaceURL(
+                projectID: project.id,
+                patchesRoot: root,
+                fileManager: fileManager
+            ) {
+                try? fileManager.removeItem(at: replacement)
+            }
+            if let existing, fileManager.fileExists(atPath: displaced.path) {
+                try? fileManager.moveItem(at: displaced, to: existing)
+            }
+            throw error
+        }
     }
 
     static func workspaceURL(

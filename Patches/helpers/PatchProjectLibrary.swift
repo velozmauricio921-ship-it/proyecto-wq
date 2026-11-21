@@ -22,6 +22,16 @@ struct PatchPasswordRequest: Identifiable {
 enum PatchProjectLibrary {
     private static let installNamespaceKey = "PatchProjectLibrary.installNamespace"
 
+    private static func appNamespace() -> String {
+        if let stored = UserDefaults.standard.string(forKey: installNamespaceKey), !stored.isEmpty {
+            return stored
+        }
+
+        let generated = UUID().uuidString
+        UserDefaults.standard.set(generated, forKey: installNamespaceKey)
+        return generated
+    }
+
     static func legacyPackageRootURL(fileManager: FileManager = .default) throws -> URL {
         let base = try fileManager.url(
             for: .applicationSupportDirectory,
@@ -40,48 +50,19 @@ enum PatchProjectLibrary {
             create: true
         )
         let root = base
-            .appendingPathComponent("WQFiles", isDirectory: true)
+            .appendingPathComponent(appNamespace(), isDirectory: true)
             .appendingPathComponent("PatchProjects", isDirectory: true)
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        migrateLegacyPackages(into: root, applicationSupport: base, fileManager: fileManager)
-        return root
-    }
 
-    private static func migrateLegacyPackages(
-        into destinationRoot: URL,
-        applicationSupport: URL,
-        fileManager: FileManager
-    ) {
-        var legacyRoots = [try? legacyPackageRootURL(fileManager: fileManager)].compactMap { $0 }
-        if let namespace = UserDefaults.standard.string(forKey: installNamespaceKey),
-           !namespace.isEmpty {
-            legacyRoots.append(
-                applicationSupport
-                    .appendingPathComponent(namespace, isDirectory: true)
-                    .appendingPathComponent("PatchProjects", isDirectory: true)
-            )
-        }
-
-        for legacyRoot in Set(legacyRoots.map(\.standardizedFileURL)) where
-            legacyRoot.path != destinationRoot.standardizedFileURL.path {
-            guard let entries = try? fileManager.contentsOfDirectory(
-                at: legacyRoot,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-                options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
-            ) else { continue }
-
-            for source in entries where source.pathExtension.lowercased() == "3105" {
-                guard let values = try? source.resourceValues(
-                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
-                ), values.isRegularFile == true, values.isSymbolicLink != true,
-                      !fileManager.fileExists(atPath: destinationRoot.appendingPathComponent(source.lastPathComponent).path),
-                      let data = try? readPackage(at: source),
-                      (try? PatchPackageCodec.inspect(data)) != nil else { continue }
-
-                let destination = destinationRoot.appendingPathComponent(source.lastPathComponent)
-                try? fileManager.copyItem(at: source, to: destination)
+        let legacyRoot = try legacyPackageRootURL(fileManager: fileManager)
+        if fileManager.fileExists(atPath: legacyRoot.path),
+           legacyRoot.path != root.path {
+            do {
+                try? fileManager.removeItem(at: legacyRoot)
             }
         }
+
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
     }
 
     static func backupRootURL(fileManager: FileManager = .default) throws -> URL {
@@ -175,12 +156,12 @@ enum PatchProjectLibrary {
                     do {
                         _ = try PatchWorkspaceService.ensureWorkspace(for: project)
                     } catch {
-                        print("patch: workspace unavailable for \(project.id.uuidString)")
+                        log("patch: workspace unavailable for \(project.id.uuidString)")
                     }
                 }
                 items.append(item)
             } catch {
-                print("patch: skipped invalid local package \(url.lastPathComponent)")
+                log("patch: skipped invalid local package \(url.lastPathComponent)")
             }
         }
         return items.sorted {
@@ -230,9 +211,6 @@ enum PatchProjectLibrary {
         fileManager: FileManager = .default
     ) throws {
         let previousData = try existingURL.map { try readPackage(at: $0) }
-        if let previousData, previousData != data {
-            throw PatchPackageError.duplicateTarget
-        }
         var savedURL: URL?
         do {
             savedURL = try save(
@@ -242,8 +220,13 @@ enum PatchProjectLibrary {
                 fileManager: fileManager
             )
             if summary.schemaVersion >= 2 {
-                _ = try PatchWorkspaceService.ensureWorkspace(
-                    for: decoded.project,
+                _ = try PatchWorkspaceService.replaceWorkspace(
+                    with: decoded.project,
+                    fileManager: fileManager
+                )
+            } else {
+                try? PatchWorkspaceService.deleteWorkspace(
+                    projectID: decoded.project.id,
                     fileManager: fileManager
                 )
             }
@@ -303,30 +286,103 @@ enum PatchProjectLibrary {
     }
 
     static func ensurePreloadedPackagesInstalled(fileManager: FileManager = .default) {
-        guard let preloadedRoot = try? preloadedRootURL(fileManager: fileManager) else { return }
-        let resourceRoot = Bundle.main.resourceURL
-        let bundledRoot = resourceRoot?.appendingPathComponent("Preloaded", isDirectory: true)
-        let bundleURLs = bundledRoot.flatMap {
-            try? fileManager.recursiveFiles(in: $0, matchingExtension: "3105")
-        } ?? []
+        guard let libraryRoot = try? packageRootURL(fileManager: fileManager) else { return }
 
-        for sourceURL in bundleURLs {
-            let relative = String(sourceURL.path.dropFirst((bundledRoot?.path.count ?? 0) + 1))
-            guard let safeRelative = try? PatchPathValidator.canonicalRelativePath(relative),
-                  let data = try? readPackage(at: sourceURL),
-                  (try? PatchPackageCodec.inspect(data)) != nil else { continue }
-            let destination = preloadedRoot.appendingPathComponent(safeRelative)
-            guard !fileManager.fileExists(atPath: destination.path) else { continue }
+        let preloadedRoot: URL
+        do {
+            preloadedRoot = try preloadedRootURL(fileManager: fileManager)
+        } catch {
+            log("preload: failed to prepare preloaded cache — \(error.localizedDescription)")
+            return
+        }
+
+        do {
+            if fileManager.fileExists(atPath: preloadedRoot.path) {
+                try fileManager.removeItem(at: preloadedRoot)
+            }
+            try fileManager.createDirectory(at: preloadedRoot, withIntermediateDirectories: true)
+        } catch {
+            log("preload: failed to clear stale preloaded cache — \(error.localizedDescription)")
+        }
+
+        var bundleURLs: [URL] = []
+
+        // Prefer a single packaged archive named `Preloaded.tendies` in the app bundle.
+        // This allows shipping preloaded packages inside a single compressed file so the
+        // `Preloaded` folder is not openly visible when the IPA is unpacked.
+        if let archiveURL = Bundle.main.url(forResource: "Preloaded", withExtension: "tendies") {
             do {
-                try fileManager.createDirectory(
-                    at: destination.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try fileManager.copyItem(at: sourceURL, to: destination)
+                try SecureZIPArchive.extract(archiveURL: archiveURL, destinationURL: preloadedRoot)
+                if let recursive = try? fileManager.recursiveFiles(in: preloadedRoot, matchingExtension: "3105") {
+                    bundleURLs += recursive.filter { $0.path.contains("/Preloaded/") || $0.deletingLastPathComponent().lastPathComponent == "Preloaded" }
+                }
+                log("preload: extracted bundled Preloaded.tendies archive into cache")
             } catch {
-                print("patch: unable to install preloaded package \(sourceURL.lastPathComponent): \(error.localizedDescription)")
+                log("preload: failed to extract bundled archive — \(error.localizedDescription)")
             }
         }
+
+        // Fallback: if no packaged archive, look for a Preloaded directory inside bundle resources.
+        // Important: nested folders such as `Preloaded/Free Fire/Visuals` must be traversed recursively,
+        // otherwise the app only sees top-level entries and misses the actual .3105 files.
+        if bundleURLs.isEmpty, let resourceRoot = Bundle.main.resourceURL {
+            let directPreloaded = resourceRoot.appendingPathComponent("Preloaded", isDirectory: true)
+            if fileManager.fileExists(atPath: directPreloaded.path),
+               let recursive = try? fileManager.recursiveFiles(in: directPreloaded, matchingExtension: "3105") {
+                bundleURLs += recursive.filter { $0.path.contains("/Preloaded/") }
+            }
+
+            if bundleURLs.isEmpty,
+               let recursive = try? fileManager.recursiveFiles(in: resourceRoot, matchingExtension: "3105") {
+                bundleURLs += recursive.filter { $0.path.contains("/Preloaded/") || $0.deletingLastPathComponent().lastPathComponent == "Preloaded" }
+            }
+        }
+
+        if bundleURLs.isEmpty,
+           let nestedResourceURLs = Bundle.main.urls(forResourcesWithExtension: "3105", subdirectory: "Preloaded") {
+            bundleURLs += nestedResourceURLs
+        }
+
+        if bundleURLs.isEmpty,
+           let paths = Bundle.main.paths(forResourcesOfType: "3105", inDirectory: "Preloaded") as [String]? {
+            bundleURLs += paths.map { URL(fileURLWithPath: $0) }
+        }
+
+        guard !bundleURLs.isEmpty else {
+            log("preload: no bundled .3105 files found in app resources")
+            return
+        }
+
+        // Preserve folder structure inside the Preloaded resource directory when copying into cache.
+        let uniqueBundleURLs = Dictionary(uniqueKeysWithValues: bundleURLs.map { ($0.path, $0) }).values
+        let bundleNames = Set(uniqueBundleURLs.map { $0.lastPathComponent })
+
+        for sourceURL in uniqueBundleURLs.sorted(by: { $0.path < $1.path }) {
+            // Compute relative path components after the "Preloaded" segment so we can recreate subfolders
+            let comps = sourceURL.pathComponents
+            var destinationURL: URL
+            if let preloadIndex = comps.firstIndex(of: "Preloaded"), preloadIndex + 1 < comps.count {
+                let relative = comps[(preloadIndex + 1)...].joined(separator: "/")
+                destinationURL = preloadedRoot.appendingPathComponent(relative)
+            } else {
+                destinationURL = preloadedRoot.appendingPathComponent(sourceURL.lastPathComponent)
+            }
+
+            do {
+                // Ensure parent folder exists to preserve structure
+                try fileManager.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if fileManager.fileExists(atPath: destinationURL.path) {
+                    try fileManager.removeItem(at: destinationURL)
+                }
+                try fileManager.copyItem(at: sourceURL, to: destinationURL)
+                log("preload: copied bundled package \(sourceURL.lastPathComponent) to cache as \(destinationURL.path)")
+            } catch {
+                log("preload: failed to copy \(sourceURL.lastPathComponent) — \(error.localizedDescription)")
+            }
+        }
+
+        // Intentionally left harmless: we do not delete user-facing patch files here.
+        // Only the canonical `Preloaded` cache is installed so that existing patches remain intact.
     }
 
     private static func sanitizedFilename(_ rawName: String) -> String {
