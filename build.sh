@@ -56,6 +56,8 @@ EXPECTED_BUNDLE_ID=$(plist_value CFBundleIdentifier Info.plist)
 EXPECTED_VERSION=$(plist_value CFBundleShortVersionString Info.plist)
 EXPECTED_BUILD=$(plist_value CFBundleVersion Info.plist)
 EXPECTED_MINIMUM_OS=$(plist_value MinimumOSVersion Info.plist)
+/usr/bin/plutil -lint "$ROOT/entitlements.plist" >/dev/null || \
+    fail "entitlements.plist is not a valid plist"
 APP_GROUP=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' entitlements.plist)
 [[ -n "$APP_GROUP" ]] || fail "entitlements.plist has no App Group"
 # WQ Files' folder (Backups, AppBackups) shows in the Files app only with both
@@ -77,6 +79,12 @@ cleanup() {
     if [[ -n "${CHECK_DIR:-}" && -d "$CHECK_DIR" ]]; then rm -rf -- "$CHECK_DIR"; fi
 }
 trap cleanup EXIT
+
+ENTITLEMENTS="$OUT/entitlements.plist"
+/usr/bin/plutil -convert xml1 -o "$ENTITLEMENTS" "$ROOT/entitlements.plist" || \
+    fail "could not normalize entitlements.plist"
+/usr/bin/plutil -lint "$ENTITLEMENTS" >/dev/null || \
+    fail "normalized entitlements are not a valid plist"
 
 APP="$OUT/Payload/WQFiles.app"
 mkdir -p "$APP"
@@ -153,7 +161,7 @@ if [[ -d "$ROOT/Preloaded" ]]; then
     cp -R "$ROOT/Preloaded/." "$APP/Preloaded/"
 fi
 plutil -convert binary1 "$APP/Info.plist"
-codesign -f -s - --entitlements entitlements.plist "$APP"
+codesign -f -s - --entitlements "$ENTITLEMENTS" "$APP"
 
 validate_app() {
     local app_path=$1
