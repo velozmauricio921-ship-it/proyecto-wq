@@ -133,11 +133,10 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
         Patches/helpers/PatchDraftCoordinator.swift
         Patches/helpers/PatchTransaction.swift
         Patches/helpers/PatchFileAccessAdapter.swift
-        Patches/helpers/AuthorizedPatchService.swift
         Patches/views/PatchProjectsView.swift
         Patches/views/PatchProjectEditorView.swift
         Patches/views/FolderPatchSelectionView.swift
-        Patches/WQPatchIntegrationSupport.swift
+        WQPatchIntegrationSupport.swift
     )
     SOURCES=(WQCore.m WQAccess.m WQPatchAccessBridge.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQAuthGate.m WQPatchReader.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQWebServer.m WQTheme.m WQInspector.m main.m)
     FLAGS=(-fobjc-arc -fmodules "-fmodules-cache-path=$OUT/modules-ios" -arch arm64 "-miphoneos-version-min=$MIN_OS" -isysroot "$IOS_SDK" -Wall -Wextra -Werror -O2)
@@ -179,5 +178,5 @@ bash -n build.sh tests/run_all_tests.sh tests/run_tests.sh tests/run_apps_tests.
 
 # patch runner
 # patch dependencies
-compile_run PatchModuleTests Patches/helpers/PatchProjectModels.swift Patches/helpers/PatchPackageCodec.swift Patches/helpers/PatchKeyStore.swift Patches/helpers/PatchWorkspaceService.swift Patches/helpers/FileManager+RecursiveFiles.swift Patches/helpers/PatchProjectLibrary.swift Patches/helpers/PatchProjectStore.swift Patches/helpers/PatchDraftService.swift Patches/helpers/PatchDraftCoordinator.swift Patches/helpers/PatchTransaction.swift Patches/helpers/PatchFileAccessAdapter.swift Patches/helpers/AuthorizedPatchService.swift Patches/views/PatchProjectsView.swift Patches/views/PatchProjectEditorView.swift Patches/views/FolderPatchSelectionView.swift WQCore.m WQAccess.m WQPatchAccessBridge.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQAuthGate.m WQPatchReader.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQWebServer.m WQTheme.m WQInspector.m main.m
+compile_run PatchModuleTests Patches/helpers/PatchProjectModels.swift Patches/helpers/PatchPackageCodec.swift Patches/helpers/PatchKeyStore.swift Patches/helpers/PatchWorkspaceService.swift Patches/helpers/FileManager+RecursiveFiles.swift Patches/helpers/PatchProjectLibrary.swift Patches/helpers/PatchProjectStore.swift Patches/helpers/PatchDraftService.swift Patches/helpers/PatchDraftCoordinator.swift Patches/helpers/PatchTransaction.swift Patches/helpers/PatchFileAccessAdapter.swift Patches/views/PatchProjectsView.swift Patches/views/PatchProjectEditorView.swift Patches/views/FolderPatchSelectionView.swift WQCore.m WQAccess.m WQPatchAccessBridge.m WQScanTask.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQAuthGate.m WQPatchReader.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQWebServer.m WQTheme.m WQInspector.m main.m
 printf '\nAll requested regression suites passed. Logs retained in: %s\n' "$OUT"
