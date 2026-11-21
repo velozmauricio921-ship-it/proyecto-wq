@@ -279,13 +279,6 @@ enum AuthorizedPatchService {
                     relativePath: rule.relativePath,
                     isDirectory: false
                 )
-            },
-            beforeDirectoryWrite: { bundleID, relativePath in
-                try access.authorize(bundleID: bundleID, relativePath: relativePath)
-            },
-            beforeRestore: { bundleID, relativePath, isDirectory in
-                try access.authorize(bundleID: bundleID, relativePath: relativePath)
-                _ = isDirectory
             }
         )
     }
@@ -299,7 +292,6 @@ enum AuthorizedPatchService {
             throw PatchPackageError.invalidProject
         }
         try folders.values.forEach { try $0.validate() }
-        let access = try PatchFileAccessAdapter(bundleIdentifiers: required, folders: folders)
         try PatchTransaction.restore(
             receipt: receipt,
             containerResolver: { bundleID in
@@ -308,10 +300,6 @@ enum AuthorizedPatchService {
                 }
                 try folder.authorize(folder.url)
                 return folder.url
-            },
-            beforeRestore: { bundleID, relativePath, isDirectory in
-                try access.authorize(bundleID: bundleID, relativePath: relativePath)
-                _ = isDirectory
             }
         )
     }
